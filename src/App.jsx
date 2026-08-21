@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import './App.css'
 const trainingMedia = [
   {
@@ -64,6 +64,12 @@ const PORTFOLIO_FONT =
 function App() {
   /*
 =========================
+Navigation state
+=========================
+   */
+  const [isNavOpen, setIsNavOpen] = useState(false)
+  /*
+=========================
 Training slideshow state
 =========================
    */
@@ -76,7 +82,11 @@ Training slideshow state
 Hero typewriter state
 =========================
    */
-  const [typedHeroText, setTypedHeroText] = useState('')
+  const [typedHeroText, setTypedHeroText] = useState(() =>
+    typeof window !== 'undefined' && !('IntersectionObserver' in window)
+      ? HERO_TEXT
+      : ''
+  )
   /*
 =========================
 Refs
@@ -100,25 +110,58 @@ Cleanup helpers
       window.clearTimeout(
         transitionTimerRef.current
       )
-  transitionTimerRef.current = null
-}
+      transitionTimerRef.current = null
+    }
   }
   const clearImageTimer = () => {
     if (imageTimerRef.current) {
       window.clearTimeout(
         imageTimerRef.current
       )
-  imageTimerRef.current = null
-}
+      imageTimerRef.current = null
+    }
   }
   const clearTypewriterTimer = () => {
     if (typewriterTimerRef.current) {
       window.clearTimeout(
         typewriterTimerRef.current
       )
-  typewriterTimerRef.current = null
-}
+      typewriterTimerRef.current = null
+    }
   }
+  /*
+=========================
+Mobile navigation effect
+=========================
+   */
+  useEffect(() => {
+    if (isNavOpen) {
+      document.body.style.overflow = 'hidden'
+    } else {
+      document.body.style.overflow = ''
+    }
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setIsNavOpen(false)
+      }
+    }
+
+    const handleResize = () => {
+      if (window.innerWidth > 768) {
+        setIsNavOpen(false)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('resize', handleResize)
+
+    return () => {
+      document.body.style.overflow = ''
+      window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [isNavOpen])
   /*
 =========================
 Hero typewriter
@@ -134,82 +177,80 @@ blinking behavior reliable after typing finishes.
   useEffect(() => {
     const heroElement =
       heroSectionRef.current
-if (!heroElement) {
-  return undefined
-}
+    if (!heroElement) {
+      return undefined
+    }
 
-if (
-  typeof window === 'undefined' ||
-  !('IntersectionObserver' in window)
-) {
-  setTypedHeroText(HERO_TEXT)
+    if (
+      typeof window === 'undefined' ||
+      !('IntersectionObserver' in window)
+    ) {
+      return undefined
+    }
 
-  return undefined
-}
+    const observer =
+      new IntersectionObserver(
+        (entries) => {
+          const entry = entries[0]
 
-const observer =
-  new IntersectionObserver(
-    (entries) => {
-      const entry = entries[0]
+          if (!entry) {
+            return
+          }
 
-      if (!entry) {
-        return
-      }
+          if (entry.isIntersecting) {
+            clearTypewriterTimer()
 
-      if (entry.isIntersecting) {
-        clearTypewriterTimer()
+            setTypedHeroText('')
 
-        setTypedHeroText('')
+            let currentIndex = 0
 
-        let currentIndex = 0
+            const typeNextCharacter = () => {
+              currentIndex += 1
 
-        const typeNextCharacter = () => {
-          currentIndex += 1
+              setTypedHeroText(
+                HERO_TEXT.slice(
+                  0,
+                  currentIndex
+                )
+              )
 
-          setTypedHeroText(
-            HERO_TEXT.slice(
-              0,
-              currentIndex
-            )
-          )
+              if (
+                currentIndex <
+                HERO_TEXT.length
+              ) {
+                typewriterTimerRef.current =
+                  window.setTimeout(
+                    typeNextCharacter,
+                    TYPEWRITER_SPEED
+                  )
+              } else {
+                typewriterTimerRef.current =
+                  null
+              }
+            }
 
-          if (
-            currentIndex <
-            HERO_TEXT.length
-          ) {
             typewriterTimerRef.current =
               window.setTimeout(
                 typeNextCharacter,
                 TYPEWRITER_SPEED
               )
           } else {
-            typewriterTimerRef.current =
-              null
+            clearTypewriterTimer()
+
+            setTypedHeroText('')
           }
+        },
+        {
+          threshold: 0.35,
         }
+      )
 
-        typewriterTimerRef.current =
-          window.setTimeout(
-            typeNextCharacter,
-            TYPEWRITER_SPEED
-          )
-      } else {
-        clearTypewriterTimer()
+    observer.observe(heroElement)
 
-        setTypedHeroText('')
-      }
-    },
-    {
-      threshold: 0.35,
+    return () => {
+      observer.disconnect()
+      clearTypewriterTimer()
     }
-  )
-
-observer.observe(heroElement)
-
-return () => {
-  observer.disconnect()
-  clearTypewriterTimer()
-}
   }, [])
   /*
 =========================
@@ -248,7 +289,7 @@ Video helpers
 Finish slideshow transition
 =========================
    */
-  const finishTransition = (
+  const finishTransition = useCallback((
     nextIndex,
     transitionId
   ) => {
@@ -257,14 +298,14 @@ Finish slideshow transition
     ) {
       return
     }
-clearTransitionTimer()
+    clearTransitionTimer()
 
-pauseAllVideos()
+    pauseAllVideos()
 
-setActiveMedia(nextIndex)
-setIncomingMedia(null)
-setIsTransitioning(false)
-  }
+    setActiveMedia(nextIndex)
+    setIncomingMedia(null)
+    setIsTransitioning(false)
+  }, [])
   /*
 =========================
 Training slideshow
@@ -287,7 +328,7 @@ Native CSS transform transitions move both slide
 elements simultaneously after their initial positions
 have been committed to the DOM.
    */
-  const changeMedia = (
+  const changeMedia = useCallback((
     nextIndex,
     direction = 'next'
   ) => {
@@ -299,43 +340,43 @@ have been committed to the DOM.
     ) {
       return
     }
-clearTransitionTimer()
-clearImageTimer()
+    clearTransitionTimer()
+    clearImageTimer()
 
-pauseAllVideos()
+    pauseAllVideos()
 
-transitionIdRef.current += 1
+    transitionIdRef.current += 1
 
-const transitionId =
-  transitionIdRef.current
-
-setSlideDirection(direction)
-setIncomingMedia(nextIndex)
-setIsTransitioning(true)
-
-/*
- * Safety fallback.
- *
- * The native CSS transition and transitionend event are
- * responsible for normal completion. This timer exists
- * only as a browser-safety mechanism.
- */
-
-transitionTimerRef.current =
-  window.setTimeout(() => {
-    if (
-      transitionId !==
+    const transitionId =
       transitionIdRef.current
-    ) {
-      return
-    }
 
-    finishTransition(
-      nextIndex,
-      transitionId
-    )
-  }, SLIDE_DURATION + 100)
-  }
+    setSlideDirection(direction)
+    setIncomingMedia(nextIndex)
+    setIsTransitioning(true)
+
+    /*
+     * Safety fallback.
+     *
+     * The native CSS transition and transitionend event are
+     * responsible for normal completion. This timer exists
+     * only as a browser-safety mechanism.
+     */
+
+    transitionTimerRef.current =
+      window.setTimeout(() => {
+        if (
+          transitionId !==
+          transitionIdRef.current
+        ) {
+          return
+        }
+
+        finishTransition(
+          nextIndex,
+          transitionId
+        )
+      }, SLIDE_DURATION + 100)
+  }, [activeMedia, finishTransition, isTransitioning])
   /*
 =========================
 Physical slide transition
@@ -354,111 +395,112 @@ destinations with one native CSS transform transition.
     ) {
       return undefined
     }
-const currentSlide =
-  currentSlideRef.current
+    const currentSlide =
+      currentSlideRef.current
 
-const incomingSlide =
-  incomingSlideRef.current
+    const incomingSlide =
+      incomingSlideRef.current
 
-if (
-  !currentSlide ||
-  !incomingSlide
-) {
-  return undefined
-}
-
-const transitionId =
-  transitionIdRef.current
-
-const expectedIncomingMedia =
-  incomingMedia
-
-const reducedMotion =
-  typeof window !== 'undefined' &&
-  window.matchMedia &&
-  window.matchMedia(
-    '(prefers-reduced-motion: reduce)'
-  ).matches
-
-if (reducedMotion) {
-  finishTransition(
-    incomingMedia,
-    transitionId
-  )
-
-  return undefined
-}
-
-const handleTransitionEnd = (
-  event
-) => {
-  if (
-    event.target !== incomingSlide ||
-    event.propertyName !== 'transform' ||
-    !isTransitioning ||
-    incomingMedia !==
-      expectedIncomingMedia ||
-    transitionId !==
-      transitionIdRef.current
-  ) {
-    return
-  }
-
-  finishTransition(
-    expectedIncomingMedia,
-    transitionId
-  )
-}
-
-incomingSlide.addEventListener(
-  'transitionend',
-  handleTransitionEnd
-)
-
-/*
- * Force a layout read so the browser has acknowledged
- * the exact initial transform positions before the next
- * animation frame applies the destination transforms.
- */
-
-currentSlide.offsetWidth
-
-const frameId =
-  window.requestAnimationFrame(() => {
     if (
-      transitionId !==
-      transitionIdRef.current ||
-      !isTransitioning ||
-      incomingMedia === null
+      !currentSlide ||
+      !incomingSlide
     ) {
-      return
+      return undefined
     }
 
-    const isNext =
-      slideDirection === 'next'
+    const transitionId =
+      transitionIdRef.current
 
-    currentSlide.style.transform =
-      isNext
-        ? 'translate3d(-100%, 0, 0)'
-        : 'translate3d(100%, 0, 0)'
+    const expectedIncomingMedia =
+      incomingMedia
 
-    incomingSlide.style.transform =
-      'translate3d(0, 0, 0)'
-  })
+    const reducedMotion =
+      typeof window !== 'undefined' &&
+      window.matchMedia &&
+      window.matchMedia(
+        '(prefers-reduced-motion: reduce)'
+      ).matches
 
-return () => {
-  window.cancelAnimationFrame(
-    frameId
-  )
+    if (reducedMotion) {
+      finishTransition(
+        incomingMedia,
+        transitionId
+      )
 
-  incomingSlide.removeEventListener(
-    'transitionend',
-    handleTransitionEnd
-  )
-}
+      return undefined
+    }
+
+    const handleTransitionEnd = (
+      event
+    ) => {
+      if (
+        event.target !== incomingSlide ||
+        event.propertyName !== 'transform' ||
+        !isTransitioning ||
+        incomingMedia !==
+          expectedIncomingMedia ||
+        transitionId !==
+          transitionIdRef.current
+      ) {
+        return
+      }
+
+      finishTransition(
+        expectedIncomingMedia,
+        transitionId
+      )
+    }
+
+    incomingSlide.addEventListener(
+      'transitionend',
+      handleTransitionEnd
+    )
+
+    /*
+     * Force a layout read so the browser has acknowledged
+     * the exact initial transform positions before the next
+     * animation frame applies the destination transforms.
+     */
+
+    currentSlide.offsetWidth
+
+    const frameId =
+      window.requestAnimationFrame(() => {
+        if (
+          transitionId !==
+          transitionIdRef.current ||
+          !isTransitioning ||
+          incomingMedia === null
+        ) {
+          return
+        }
+
+        const isNext =
+          slideDirection === 'next'
+
+        currentSlide.style.transform =
+          isNext
+            ? 'translate3d(-100%, 0, 0)'
+            : 'translate3d(100%, 0, 0)'
+
+        incomingSlide.style.transform =
+          'translate3d(0, 0, 0)'
+      })
+
+    return () => {
+      window.cancelAnimationFrame(
+        frameId
+      )
+
+      incomingSlide.removeEventListener(
+        'transitionend',
+        handleTransitionEnd
+      )
+    }
   }, [
-    isTransitioning,
+    finishTransition,
     incomingMedia,
+    isTransitioning,
     slideDirection,
   ])
   /*
@@ -466,35 +508,36 @@ return () => {
 Previous / next controls
 =========================
    */
-  const previousMedia = () => {
+  const previousMedia = useCallback(() => {
     if (isTransitioning) {
       return
     }
-const previousIndex =
-  activeMedia === 0
-    ? trainingMedia.length - 1
-    : activeMedia - 1
+    const previousIndex =
+      activeMedia === 0
+        ? trainingMedia.length - 1
+        : activeMedia - 1
 
-changeMedia(
-  previousIndex,
-  'previous'
-)
-  }
-  const nextMedia = () => {
+    changeMedia(
+      previousIndex,
+      'previous'
+    )
+  }, [activeMedia, changeMedia, isTransitioning])
+
+  const nextMedia = useCallback(() => {
     if (isTransitioning) {
       return
     }
-const nextIndex =
-  activeMedia ===
-  trainingMedia.length - 1
-    ? 0
-    : activeMedia + 1
+    const nextIndex =
+      activeMedia ===
+      trainingMedia.length - 1
+        ? 0
+        : activeMedia + 1
 
-changeMedia(
-  nextIndex,
-  'next'
-)
-  }
+    changeMedia(
+      nextIndex,
+      'next'
+    )
+  }, [activeMedia, changeMedia, isTransitioning])
   /*
 =========================
 Indicator selection
@@ -509,28 +552,28 @@ Indicator selection
     ) {
       return
     }
-const forwardDistance =
-  (index -
-    activeMedia +
-    trainingMedia.length) %
-  trainingMedia.length
+    const forwardDistance =
+      (index -
+        activeMedia +
+        trainingMedia.length) %
+      trainingMedia.length
 
-const backwardDistance =
-  (activeMedia -
-    index +
-    trainingMedia.length) %
-  trainingMedia.length
+    const backwardDistance =
+      (activeMedia -
+        index +
+        trainingMedia.length) %
+      trainingMedia.length
 
-const direction =
-  forwardDistance <=
-  backwardDistance
-    ? 'next'
-    : 'previous'
+    const direction =
+      forwardDistance <=
+      backwardDistance
+        ? 'next'
+        : 'previous'
 
-changeMedia(
-  index,
-  direction
-)
+    changeMedia(
+      index,
+      direction
+    )
   }
   /*
 =========================
@@ -550,53 +593,53 @@ Video playback
   useEffect(() => {
     const currentMedia =
       trainingMedia[activeMedia]
-if (
-  !currentMedia ||
-  currentMedia.type !== 'video'
-) {
-  return undefined
-}
-
-const video =
-  videoRefs.current[activeMedia]
-
-if (!video) {
-  return undefined
-}
-
-video.muted = true
-video.defaultMuted = true
-video.playsInline = true
-
-const playVideo = async () => {
-  try {
-    await video.play()
-  } catch {
-    /*
-     * Muted autoplay can still be rejected
-     * by browser policies.
-     */
-  }
-}
-
-if (video.readyState >= 2) {
-  playVideo()
-} else {
-  video.addEventListener(
-    'loadeddata',
-    playVideo,
-    {
-      once: true,
+    if (
+      !currentMedia ||
+      currentMedia.type !== 'video'
+    ) {
+      return undefined
     }
-  )
-}
 
-return () => {
-  video.removeEventListener(
-    'loadeddata',
-    playVideo
-  )
-}
+    const video =
+      videoRefs.current[activeMedia]
+
+    if (!video) {
+      return undefined
+    }
+
+    video.muted = true
+    video.defaultMuted = true
+    video.playsInline = true
+
+    const playVideo = async () => {
+      try {
+        await video.play()
+      } catch {
+        /*
+         * Muted autoplay can still be rejected
+         * by browser policies.
+         */
+      }
+    }
+
+    if (video.readyState >= 2) {
+      playVideo()
+    } else {
+      video.addEventListener(
+        'loadeddata',
+        playVideo,
+        {
+          once: true,
+        }
+      )
+    }
+
+    return () => {
+      video.removeEventListener(
+        'loadeddata',
+        playVideo
+      )
+    }
   }, [activeMedia])
   /*
 =========================
@@ -608,25 +651,25 @@ Videos advance when playback finishes.
    */
   useEffect(() => {
     clearImageTimer()
-const currentMedia =
-  trainingMedia[activeMedia]
+    const currentMedia =
+      trainingMedia[activeMedia]
 
-if (
-  !currentMedia ||
-  currentMedia.type === 'video'
-) {
-  return undefined
-}
+    if (
+      !currentMedia ||
+      currentMedia.type === 'video'
+    ) {
+      return undefined
+    }
 
-imageTimerRef.current =
-  window.setTimeout(() => {
-    nextMedia()
-  }, IMAGE_DURATION)
+    imageTimerRef.current =
+      window.setTimeout(() => {
+        nextMedia()
+      }, IMAGE_DURATION)
 
-return () => {
-  clearImageTimer()
-}
-  }, [activeMedia])
+    return () => {
+      clearImageTimer()
+    }
+  }, [activeMedia, nextMedia])
   /*
 =========================
 Component cleanup
@@ -1290,76 +1333,281 @@ Hero text rendering
 
       /*
        * =================================================
-       * MOBILE NAVIGATION
+       * MOBILE NAVIGATION & HAMBURGER
        * =================================================
        */
 
-      @media (max-width: 760px) {
+      .portfolio-app .nav-toggle {
+        display: none;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        gap: 5px;
+        width: 40px;
+        height: 40px;
+        padding: 0;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        cursor: pointer;
+        z-index: 1002;
+        transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+      }
+
+      .portfolio-app .nav-toggle:hover {
+        background: rgba(103, 232, 249, 0.08);
+        border-color: rgba(103, 232, 249, 0.4);
+      }
+
+      .portfolio-app .nav-toggle-bar {
+        display: block;
+        width: 19px;
+        height: 2px;
+        background-color: var(--text);
+        border-radius: 2px;
+        transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s ease, background-color 0.2s ease;
+        transform-origin: center;
+      }
+
+      .portfolio-app .nav-toggle:hover .nav-toggle-bar {
+        background-color: var(--accent);
+      }
+
+      .portfolio-app .nav-toggle.active .nav-toggle-bar:nth-child(1) {
+        transform: translateY(7px) rotate(45deg);
+      }
+
+      .portfolio-app .nav-toggle.active .nav-toggle-bar:nth-child(2) {
+        opacity: 0;
+        transform: scaleX(0);
+      }
+
+      .portfolio-app .nav-toggle.active .nav-toggle-bar:nth-child(3) {
+        transform: translateY(-7px) rotate(-45deg);
+      }
+
+      .portfolio-app .nav-links {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 28px;
+      }
+
+      .portfolio-app .nav-links a {
+        color: var(--muted);
+        font-size: 0.82rem;
+        font-weight: 500;
+        white-space: nowrap;
+        transition: color 0.2s ease, opacity 0.2s ease;
+      }
+
+      .portfolio-app .nav-links a:hover {
+        color: var(--text);
+      }
+
+      @media (max-width: 768px) {
         .portfolio-app .navbar {
-          width:
-            min(
-              var(--max-width),
-              calc(100% - 32px)
-            );
-
-          padding-top:
-            18px;
-
-          padding-bottom:
-            18px;
+          width: min(var(--max-width), calc(100% - 32px));
+          padding-top: 16px;
+          padding-bottom: 16px;
         }
 
-        .portfolio-app
-          .hero-section {
-          padding-top:
-            125px;
+        .portfolio-app .nav-toggle {
+          display: flex;
+        }
+
+        .portfolio-app .nav-links {
+          position: fixed;
+          top: 0;
+          left: 0;
+          width: 100vw;
+          height: 100vh;
+          background: rgba(8, 10, 15, 0.97);
+          backdrop-filter: blur(20px);
+          -webkit-backdrop-filter: blur(20px);
+          flex-direction: column;
+          justify-content: center;
+          align-items: center;
+          gap: 20px;
+          padding: 80px 24px 40px;
+          opacity: 0;
+          pointer-events: none;
+          transform: translateY(-16px);
+          transition: opacity 0.25s ease, transform 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+          z-index: 1001;
+        }
+
+        .portfolio-app .nav-links.nav-links-open {
+          opacity: 1;
+          pointer-events: auto;
+          transform: translateY(0);
+        }
+
+        .portfolio-app .nav-links a {
+          font-size: 1.18rem;
+          font-weight: 600;
+          color: var(--muted);
+          padding: 8px 18px;
+          border-radius: 8px;
+          transition: color 0.2s ease, background-color 0.2s ease, transform 0.2s ease;
+        }
+
+        .portfolio-app .nav-links a:hover,
+        .portfolio-app .nav-links a:active {
+          color: var(--accent);
+          background: rgba(103, 232, 249, 0.08);
+          transform: translateX(4px);
+        }
+
+        .portfolio-app .hero-section {
+          padding-top: 125px;
         }
       }
 
       @media (max-width: 480px) {
         .portfolio-app .navbar {
-          width:
-            calc(100% - 32px);
-
-          padding-top:
-            16px;
-
-          padding-bottom:
-            16px;
+          width: calc(100% - 32px);
+          padding-top: 14px;
+          padding-bottom: 14px;
         }
 
-        .portfolio-app
-          .hero-section {
-          padding-top:
-            120px;
+        .portfolio-app .hero-section {
+          padding-top: 110px;
         }
       }
 
-      @media (max-width: 380px) {
-        .portfolio-app .navbar {
-          width:
-            calc(100% - 32px);
+      /*
+       * =================================================
+       * EXTRAS SECTION
+       * =================================================
+       */
 
-          flex-direction:
-            row;
+      .portfolio-app .extras-section {
+        position: relative;
+      }
 
-          align-items:
-            flex-start;
+      .portfolio-app .extras-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 20px;
+        margin-top: 55px;
+      }
+
+      .portfolio-app .extra-card {
+        padding: 36px;
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: linear-gradient(
+          145deg,
+          rgba(255, 255, 255, 0.035),
+          rgba(255, 255, 255, 0.01)
+        );
+        transition: transform 0.25s ease, border-color 0.25s ease, background 0.25s ease;
+      }
+
+      .portfolio-app .extra-card:hover {
+        transform: translateY(-5px);
+        border-color: var(--border-hover);
+        background: linear-gradient(
+          145deg,
+          rgba(255, 255, 255, 0.045),
+          rgba(255, 255, 255, 0.012)
+        );
+      }
+
+      .portfolio-app .extra-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 15px;
+      }
+
+      .portfolio-app .extra-number {
+        color: var(--accent);
+        font-size: 0.68rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+      }
+
+      .portfolio-app .extra-status {
+        padding: 5px 10px;
+        border: 1px solid rgba(103, 232, 249, 0.25);
+        border-radius: 999px;
+        background: rgba(103, 232, 249, 0.04);
+        color: #67e8f9;
+        font-size: 0.62rem;
+        font-weight: 800;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+
+      .portfolio-app .extra-header-info {
+        margin-top: 24px;
+      }
+
+      .portfolio-app .extra-card h3 {
+        color: var(--text);
+        font-size: 1.45rem;
+        letter-spacing: -0.035em;
+        font-weight: 750;
+      }
+
+      .portfolio-app .extra-subtitle {
+        margin-top: 6px;
+        color: var(--accent);
+        font-size: 0.84rem;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+
+      .portfolio-app .extra-card p:not(.extra-number):not(.extra-subtitle) {
+        margin-top: 16px;
+        color: var(--muted);
+        font-size: 0.92rem;
+        line-height: 1.8;
+      }
+
+      .portfolio-app .extra-live-link {
+        display: inline-flex;
+        width: fit-content;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        margin-top: 26px;
+        padding: 8px 14px;
+        border: 1px solid rgba(103, 232, 249, 0.28);
+        border-radius: 999px;
+        background: rgba(103, 232, 249, 0.04);
+        color: #67e8f9;
+        font-size: 0.72rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
+      }
+
+      .portfolio-app .extra-live-link:hover {
+        transform: translateY(-2px);
+        border-color: rgba(103, 232, 249, 0.55);
+        background: rgba(103, 232, 249, 0.1);
+        color: #a5f3fc;
+      }
+
+      .portfolio-app .extra-live-arrow {
+        font-size: 0.85rem;
+        line-height: 1;
+      }
+
+      @media (max-width: 760px) {
+        .portfolio-app .extra-card {
+          padding: 26px;
         }
 
-        .portfolio-app
-          .navbar nav {
-          width:
-            auto;
-
-          justify-content:
-            flex-end;
-        }
-
-        .portfolio-app
-          .hero-section {
-          padding-top:
-            145px;
+        .portfolio-app .extra-card h3 {
+          font-size: 1.25rem;
         }
       }
 
@@ -1394,32 +1642,70 @@ Hero text rendering
     <a
       href="#home"
       className="brand"
+      onClick={() => setIsNavOpen(false)}
     >
       Samuel John-Ibro
     </a>
 
-    <nav>
-      <a href="#about">
+    <button
+      type="button"
+      className={`nav-toggle ${isNavOpen ? 'active' : ''}`}
+      onClick={() => setIsNavOpen((prev) => !prev)}
+      aria-label={isNavOpen ? 'Close navigation menu' : 'Open navigation menu'}
+      aria-expanded={isNavOpen}
+    >
+      <span className="nav-toggle-bar" />
+      <span className="nav-toggle-bar" />
+      <span className="nav-toggle-bar" />
+    </button>
+
+    <nav className={`nav-links ${isNavOpen ? 'nav-links-open' : ''}`}>
+      <a
+        href="#about"
+        onClick={() => setIsNavOpen(false)}
+      >
         About
       </a>
 
-      <a href="#projects">
+      <a
+        href="#projects"
+        onClick={() => setIsNavOpen(false)}
+      >
         Projects
       </a>
 
-      <a href="#skills">
+      <a
+        href="#skills"
+        onClick={() => setIsNavOpen(false)}
+      >
         Skills
       </a>
 
-      <a href="#training">
+      <a
+        href="#training"
+        onClick={() => setIsNavOpen(false)}
+      >
         Training
       </a>
 
-      <a href="#credentials">
+      <a
+        href="#credentials"
+        onClick={() => setIsNavOpen(false)}
+      >
         Credentials
       </a>
 
-      <a href="#contact">
+      <a
+        href="#extras"
+        onClick={() => setIsNavOpen(false)}
+      >
+        Extras
+      </a>
+
+      <a
+        href="#contact"
+        onClick={() => setIsNavOpen(false)}
+      >
         Contact
       </a>
     </nav>
@@ -2151,6 +2437,101 @@ Hero text rendering
   </section>
 
   {/* =========================
+      Extras / Creative Pursuits
+      ========================= */}
+
+  <section
+    id="extras"
+    className="section extras-section"
+  >
+    <p className="section-label">
+      06 — EXTRAS
+    </p>
+
+    <h2>
+      Beyond code.
+    </h2>
+
+    <p>
+      Outside of software engineering and cloud systems, I produce music, sound
+      design, and audio-visual creative work as <strong>silachomka</strong>,
+      exploring beats, Afro trap, and Afro highlife within chomkaMUSIC™ and
+      Chomka Nation.
+    </p>
+
+    <div className="extras-grid">
+      <article className="extra-card">
+        <div className="extra-top">
+          <p className="extra-number">
+            01
+          </p>
+
+          <span className="extra-status">
+            CREATIVE ENDEAVOR
+          </span>
+        </div>
+
+        <div className="extra-header-info">
+          <h3>
+            silachomka — Official Artist Home
+          </h3>
+
+          <p className="extra-subtitle">
+            Music Producer • Artist • chomkaMUSIC™
+          </p>
+        </div>
+
+        <p>
+          My official artist website featuring music releases, beat store,
+          production catalog, and creative projects across Afro trap, Afro
+          highlife, and experimental sound.
+        </p>
+
+        <div className="project-tags">
+          <span>
+            Music Production
+          </span>
+
+          <span>
+            Beat Store
+          </span>
+
+          <span>
+            chomkaMUSIC™
+          </span>
+
+          <span>
+            Sound Design
+          </span>
+
+          <span>
+            Creative Direction
+          </span>
+        </div>
+
+        <a
+          href="https://silachomka.vercel.app/"
+          target="_blank"
+          rel="noreferrer"
+          className="extra-live-link"
+          aria-label="Open silachomka official artist website in a new tab"
+        >
+          <span>
+            VISIT ARTIST SITE
+          </span>
+
+          <span
+            className="extra-live-arrow"
+            aria-hidden="true"
+          >
+            ↗
+          </span>
+        </a>
+      </article>
+    </div>
+  </section>
+
+  {/* =========================
       Contact
       ========================= */}
 
@@ -2159,7 +2540,7 @@ Hero text rendering
     className="section contact-section"
   >
     <p className="section-label">
-      06 — CONTACT
+      07 — CONTACT
     </p>
 
     <h2>
