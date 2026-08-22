@@ -276,12 +276,6 @@ Video helpers
         return
       }
   video.pause()
-
-  try {
-    video.currentTime = 0
-  } catch {
-    // Ignore browser timing restrictions.
-  }
 })
   }
   /*
@@ -619,6 +613,10 @@ Video playback
          * Muted autoplay can still be rejected
          * by browser policies.
          */
+        imageTimerRef.current =
+          window.setTimeout(() => {
+            nextMedia()
+          }, IMAGE_DURATION)
       }
     }
 
@@ -1083,13 +1081,11 @@ Hero text rendering
       }
 
       /*
-       * Only the FixRoomAUN LIVE status gets the
+       * Any status badge with .status-live gets the
        * glowing indicator.
        */
 
-      .portfolio-app
-        .project-card:first-child
-        .project-status {
+      .portfolio-app .status-live {
         color:
           rgba(
             230,
@@ -1099,9 +1095,7 @@ Hero text rendering
           );
       }
 
-      .portfolio-app
-        .project-card:first-child
-        .project-status::before {
+      .portfolio-app .status-live::before {
         content: '';
 
         width: 7px;
@@ -1862,7 +1856,7 @@ Hero text rendering
             01
           </p>
 
-          <span className="project-status">
+          <span className="project-status status-live">
             LIVE
           </span>
         </div>
@@ -2133,8 +2127,9 @@ Hero text rendering
           style={{
             transform:
               'translate3d(0, 0, 0)',
-            transition:
-              `transform ${SLIDE_DURATION}ms cubic-bezier(0.22, 1, 0.36, 1)`,
+            transition: isTransitioning
+              ? `transform ${SLIDE_DURATION}ms cubic-bezier(0.22, 1, 0.36, 1)`
+              : 'none',
           }}
         >
           {renderMedia(
@@ -2156,8 +2151,9 @@ Hero text rendering
                 slideDirection === 'next'
                   ? 'translate3d(100%, 0, 0)'
                   : 'translate3d(-100%, 0, 0)',
-              transition:
-                `transform ${SLIDE_DURATION}ms cubic-bezier(0.22, 1, 0.36, 1)`,
+              transition: isTransitioning
+                ? `transform ${SLIDE_DURATION}ms cubic-bezier(0.22, 1, 0.36, 1)`
+                : 'none',
             }}
           >
             {renderMedia(
@@ -2466,8 +2462,8 @@ Hero text rendering
             01
           </p>
 
-          <span className="extra-status">
-            CREATIVE ENDEAVOR
+          <span className="project-status status-live">
+            LIVE
           </span>
         </div>
 
