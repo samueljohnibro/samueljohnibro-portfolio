@@ -997,7 +997,8 @@ main {
   transition: transform 600ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.training-media-track.is-dragging {
+.training-media-track.is-dragging,
+.training-media-track.is-instant {
   transition: none;
 }
 

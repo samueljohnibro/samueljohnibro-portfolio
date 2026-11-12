@@ -1,44 +1,150 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import './App.css'
+
 const trainingMedia = [
   {
+    id: 'training-img-1',
     type: 'image',
     src: '/assets/Cloud Computing Training 1.png',
     alt: 'AWS Cloud Computing Training session at Management Edge LTD',
   },
   {
+    id: 'training-img-2',
     type: 'image',
     src: '/assets/Cloud Computing Training 2.png',
     alt: 'AWS Cloud Computing Training at Management Edge LTD',
   },
   {
+    id: 'training-vid-3',
     type: 'video',
     src: '/assets/Cloud Computing Training 3.mp4',
     poster: '/assets/Cloud Computing Training 2.png',
+    maxDurationMs: 12000,
     alt: 'AWS Cloud Computing Training session at Management Edge LTD',
   },
   {
+    id: 'training-vid-4',
     type: 'video',
     src: '/assets/Cloud Computing Training 4.mp4',
     poster: '/assets/Cloud Computing Training 5.png',
+    maxDurationMs: 45000,
     alt: 'AWS Cloud Computing Training session at Management Edge LTD',
   },
   {
+    id: 'training-img-5',
     type: 'image',
     src: '/assets/Cloud Computing Training 5.png',
     alt: 'AWS Cloud Computing Training session at Management Edge LTD',
   },
   {
+    id: 'training-slides-1',
     type: 'image',
     src: '/assets/training slides 1.png',
     alt: 'AWS Cloud Computing Training presentation slides',
   },
   {
+    id: 'training-slides-2',
     type: 'image',
     src: '/assets/training slides 2.png',
     alt: 'AWS Cloud Computing Training presentation slides',
   },
 ]
+
+const SLIDE_IMAGE_DURATION_MS = 3500
+const SLIDE_TRANSITION_SAFETY_MS = 680
+const DRAG_THRESHOLD_PX = 50
+
+function shuffleMediaItems(items, avoidFirstId = null) {
+  const copy = [...items]
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[copy[i], copy[j]] = [copy[j], copy[i]]
+  }
+  if (avoidFirstId && copy.length > 1 && copy[0].id === avoidFirstId) {
+    const swapIdx = 1 + Math.floor(Math.random() * (copy.length - 1))
+    ;[copy[0], copy[swapIdx]] = [copy[swapIdx], copy[0]]
+  }
+  return copy
+}
+
+function buildInitialQueue() {
+  // Shuffle all media cleanly on each load/refresh, keeping only immediately ready images
+  // in the active queue while videos complete full background downloads.
+  const initialPlan = shuffleMediaItems(trainingMedia)
+  return initialPlan.filter((item) => item.type === 'image')
+}
+
+async function waitWithAbort(ms, signal) {
+  if (signal.aborted) {
+    throw new DOMException('Aborted', 'AbortError')
+  }
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      reject(new DOMException('Aborted', 'AbortError'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+async function fetchCompleteVideoBlobUrl(item, signal) {
+  const retryDelays = [1500, 3500]
+  for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+    try {
+      const response = await fetch(encodeURI(item.src), {
+        signal,
+        cache: 'default',
+      })
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status} while downloading ${item.src}`)
+      }
+      const contentType = (response.headers.get('content-type') || '').toLowerCase()
+      if (contentType.includes('text/html')) {
+        throw new Error(`Unexpected HTML response for ${item.src}`)
+      }
+      const contentEncoding = response.headers.get('content-encoding')
+      const rawLength = response.headers.get('content-length')
+      const expectedLength =
+        rawLength && !contentEncoding ? Number(rawLength) : null
+
+      const blob = await response.blob()
+      if (signal.aborted) {
+        throw new DOMException('Aborted', 'AbortError')
+      }
+      if (!blob || blob.size === 0) {
+        throw new Error(`Empty blob downloaded for ${item.src}`)
+      }
+      if (
+        Number.isFinite(expectedLength) &&
+        expectedLength > 0 &&
+        blob.size !== expectedLength
+      ) {
+        throw new Error(
+          `Incomplete blob size (${blob.size} of ${expectedLength}) for ${item.src}`
+        )
+      }
+
+      const typedBlob = blob.type
+        ? blob
+        : new Blob([blob], { type: 'video/mp4' })
+      return URL.createObjectURL(typedBlob)
+    } catch (error) {
+      if (signal.aborted || error?.name === 'AbortError') {
+        throw error
+      }
+      if (attempt >= retryDelays.length) {
+        throw error
+      }
+      await waitWithAbort(retryDelays[attempt], signal)
+    }
+  }
+  return null
+}
 
 /*
 =========================
@@ -63,9 +169,9 @@ const PORTFOLIO_FONT =
    ========================================================= */
 
 function TrainingCarousel() {
+  const [queue, setQueue] = useState(() => buildInitialQueue())
   const [activeIndex, setActiveIndex] = useState(0)
-  const [trackPosition, setTrackPosition] = useState(1)
-  const [isTransitioning, setIsTransitioning] = useState(false)
+  const [stage, setStage] = useState(null)
   const [isHovered, setIsHovered] = useState(false)
   const [isFocused, setIsFocused] = useState(false)
   const [dragOffset, setDragOffset] = useState(0)
@@ -76,41 +182,19 @@ function TrainingCarousel() {
   const transitionTimerRef = useRef(null)
   const videoRefs = useRef({})
   const pointerStartRef = useRef(0)
+  const dragOffsetRef = useRef(0)
   const isDraggingRef = useRef(false)
-  const activeIndexRef = useRef(0)
-  const trackPositionRef = useRef(1)
-  const isTransitioningRef = useRef(false)
+  const isTouchInteractionRef = useRef(false)
+  const failedImageIdsRef = useRef(new Set())
+  const queueRef = useRef(queue)
+  const activeIndexRef = useRef(activeIndex)
+  const stageRef = useRef(stage)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    queueRef.current = queue
     activeIndexRef.current = activeIndex
-  }, [activeIndex])
-
-  useEffect(() => {
-    trackPositionRef.current = trackPosition
-  }, [trackPosition])
-
-  useEffect(() => {
-    isTransitioningRef.current = isTransitioning
-  }, [isTransitioning])
-
-  // Track items: 1 clone before (slide 6) + 7 real slides (0..6) + 1 clone after (slide 0)
-  const trackItems = [
-    {
-      ...trainingMedia[trainingMedia.length - 1],
-      originalIndex: trainingMedia.length - 1,
-      key: 'clone-prev',
-    },
-    ...trainingMedia.map((item, idx) => ({
-      ...item,
-      originalIndex: idx,
-      key: `real-${idx}`,
-    })),
-    {
-      ...trainingMedia[0],
-      originalIndex: 0,
-      key: 'clone-next',
-    },
-  ]
+    stageRef.current = stage
+  }, [queue, activeIndex, stage])
 
   const clearTimers = useCallback(() => {
     if (autoPlayTimerRef.current) {
@@ -123,10 +207,11 @@ function TrainingCarousel() {
     }
   }, [])
 
-  const pauseAllVideos = useCallback(() => {
-    Object.values(videoRefs.current).forEach((video) => {
-      if (video) {
-        video.pause()
+  const pauseVideos = useCallback((resetOthersThanId = null) => {
+    Object.entries(videoRefs.current).forEach(([id, video]) => {
+      if (!video) return
+      video.pause()
+      if (resetOthersThanId !== null && id !== resetOthersThanId) {
         try {
           video.currentTime = 0
         } catch {
@@ -136,8 +221,90 @@ function TrainingCarousel() {
     })
   }, [])
 
-  // Transition completion handler (both onTransitionEnd and safety timer)
-  const handleTransitionEnd = useCallback(
+  // Background image preloading + complete Blob download for videos
+  useEffect(() => {
+    const controller = new AbortController()
+    const createdUrls = {}
+    const preloadedImages = []
+
+    const imageWarmList = trainingMedia.flatMap((item) => {
+      if (item.type === 'image') {
+        return [{ id: item.id, src: item.src }]
+      }
+      return item.poster ? [{ id: null, src: item.poster }] : []
+    })
+
+    imageWarmList.forEach(({ id, src }) => {
+      const img = new Image()
+      if (id) {
+        img.onerror = () => {
+          failedImageIdsRef.current.add(id)
+        }
+        img.onload = () => {
+          failedImageIdsRef.current.delete(id)
+        }
+      }
+      img.src = src
+      preloadedImages.push(img)
+    })
+
+    const videoItems = trainingMedia.filter((item) => item.type === 'video')
+    videoItems.forEach((videoItem) => {
+      fetchCompleteVideoBlobUrl(videoItem, controller.signal)
+        .then((blobUrl) => {
+          if (!blobUrl || controller.signal.aborted) {
+            if (blobUrl) URL.revokeObjectURL(blobUrl)
+            return
+          }
+          createdUrls[videoItem.id] = blobUrl
+          setQueue((prev) => {
+            const existingIdx = prev.findIndex((item) => item.id === videoItem.id)
+            if (existingIdx !== -1) {
+              return prev.map((item, idx) =>
+                idx === existingIdx ? { ...item, src: blobUrl } : item
+              )
+            }
+
+            const currentStage = stageRef.current
+            const targetIdxInPrev = currentStage
+              ? prev.findIndex((item) => item.id === currentStage.targetItem.id)
+              : -1
+            const minInsert = Math.min(
+              Math.max(activeIndexRef.current, targetIdxInPrev) + 1,
+              prev.length
+            )
+            const insertAt =
+              minInsert +
+              Math.floor(Math.random() * (prev.length - minInsert + 1))
+
+            const nextQueue = [...prev]
+            nextQueue.splice(insertAt, 0, {
+              ...videoItem,
+              src: blobUrl,
+            })
+            queueRef.current = nextQueue
+            return nextQueue
+          })
+        })
+        .catch((error) => {
+          if (error?.name !== 'AbortError') {
+            // Keep carousel flowing smoothly with ready slides when a video fails to download
+          }
+        })
+    })
+
+    return () => {
+      controller.abort()
+      preloadedImages.forEach((img) => {
+        img.onload = null
+        img.onerror = null
+      })
+      setQueue((prev) => prev.filter((item) => item.type === 'image'))
+      Object.values(createdUrls).forEach((url) => URL.revokeObjectURL(url))
+    }
+  }, [])
+
+  const completeTransition = useCallback(
     (event) => {
       if (
         event &&
@@ -151,106 +318,286 @@ function TrainingCarousel() {
         transitionTimerRef.current = null
       }
 
-      isTransitioningRef.current = false
-      setIsTransitioning(false)
+      const finished = stageRef.current
+      if (!finished || finished.phase !== 'animate') return
 
-      const currentPos = trackPositionRef.current
-
-      // Check wrap-around clone positions
-      if (currentPos >= trackItems.length - 1) {
-        // Reached Clone of Slide 0 (position 8), wrap silently to real Slide 0 (position 1)
-        if (trackRef.current) {
-          trackRef.current.style.transition = 'none'
-          trackRef.current.style.transform = 'translate3d(-100%, 0, 0)'
-          void trackRef.current.offsetHeight // force layout
-          trackRef.current.style.transition = ''
-        }
-        trackPositionRef.current = 1
-        setTrackPosition(1)
-        return
+      const track = trackRef.current
+      if (track) {
+        // Snap from [from, to] (-100% or 0%) back to [to] (0%) before next paint with zero flash
+        track.classList.add('is-instant')
       }
 
-      if (currentPos <= 0) {
-        // Reached Clone of Slide 6 (position 0), wrap silently to real Slide 6 (position 7)
-        const realLastPos = trackItems.length - 2
-        if (trackRef.current) {
-          trackRef.current.style.transition = 'none'
-          trackRef.current.style.transform = `translate3d(-${realLastPos * 100}%, 0, 0)`
-          void trackRef.current.offsetHeight // force layout
-          trackRef.current.style.transition = ''
-        }
-        trackPositionRef.current = realLastPos
-        setTrackPosition(realLastPos)
-        return
+      pauseVideos(finished.targetItem.id)
+
+      let resolvedIndex
+      if (finished.reshuffledQueue) {
+        const currentLatest = queueRef.current
+        const baseIds = new Set(finished.reshuffledQueue.map((item) => item.id))
+        const extrasArrivedMidWrap = currentLatest.filter(
+          (item) => !baseIds.has(item.id)
+        )
+        const nextQueue = [...finished.reshuffledQueue]
+        extrasArrivedMidWrap.forEach((videoItem) => {
+          const insertAt =
+            1 + Math.floor(Math.random() * Math.max(1, nextQueue.length))
+          nextQueue.splice(Math.min(insertAt, nextQueue.length), 0, videoItem)
+        })
+        queueRef.current = nextQueue
+        setQueue(nextQueue)
+        resolvedIndex = Math.max(
+          0,
+          nextQueue.findIndex((item) => item.id === finished.targetItem.id)
+        )
+      } else {
+        const idx = queueRef.current.findIndex(
+          (item) => item.id === finished.targetItem.id
+        )
+        resolvedIndex = idx !== -1 ? idx : 0
       }
+
+      activeIndexRef.current = resolvedIndex
+      setActiveIndex(resolvedIndex)
+      stageRef.current = null
+      setStage(null)
     },
-    [trackItems.length]
+    [pauseVideos]
   )
 
-  const navigateTo = useCallback(
-    (targetPosition, targetIndex) => {
-      if (isTransitioningRef.current) return
-
+  const launchStage = useCallback(
+    (nextStage) => {
+      if (stageRef.current) return
       clearTimers()
-      pauseAllVideos()
+      // Pause currently playing video while keeping its current frame visible during slide-out
+      pauseVideos(null)
+      stageRef.current = nextStage
+      setStage(nextStage)
+    },
+    [clearTimers, pauseVideos]
+  )
 
-      isTransitioningRef.current = true
-      setIsTransitioning(true)
-      trackPositionRef.current = targetPosition
-      setTrackPosition(targetPosition)
-      setActiveIndex(targetIndex)
+  // Synchronize CSS transition framing cleanly on prepare -> animate and settle -> idle
+  useLayoutEffect(() => {
+    const track = trackRef.current
+    if (!track) return
 
+    if (stage?.phase === 'prepare') {
+      track.classList.add('is-instant')
+      void track.offsetHeight
+      track.classList.remove('is-instant')
+      void track.offsetHeight
+
+      const rafId = requestAnimationFrame(() => {
+        setStage((prev) => {
+          if (!prev || prev.phase !== 'prepare') return prev
+          const animating = { ...prev, phase: 'animate' }
+          stageRef.current = animating
+          return animating
+        })
+      })
+      return () => cancelAnimationFrame(rafId)
+    }
+
+    if (stage?.phase === 'animate') {
       if (transitionTimerRef.current) {
         clearTimeout(transitionTimerRef.current)
       }
       transitionTimerRef.current = setTimeout(() => {
-        handleTransitionEnd()
-      }, 650)
+        completeTransition()
+      }, SLIDE_TRANSITION_SAFETY_MS)
+      return () => {
+        if (transitionTimerRef.current) {
+          clearTimeout(transitionTimerRef.current)
+          transitionTimerRef.current = null
+        }
+      }
+    }
+
+    if (!stage && !isDragging && track.classList.contains('is-instant')) {
+      void track.offsetHeight
+      track.classList.remove('is-instant')
+      void track.offsetHeight
+    }
+  }, [stage, isDragging, completeTransition])
+
+  // Ensure backgrounded browser tabs recover cleanly if a transition was interrupted
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (!document.hidden && stageRef.current?.phase === 'animate') {
+        completeTransition()
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () =>
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [completeTransition])
+
+  const pickNextTargetIndex = useCallback((currentQueue, currentIdx) => {
+    for (let step = 1; step < currentQueue.length; step += 1) {
+      const candidateIdx = currentIdx + step
+      if (candidateIdx >= currentQueue.length) break
+      if (!failedImageIdsRef.current.has(currentQueue[candidateIdx].id)) {
+        return candidateIdx
+      }
+    }
+    return currentIdx + 1
+  }, [])
+
+  const pickPrevTargetIndex = useCallback((currentQueue, currentIdx) => {
+    for (let step = 1; step <= currentIdx; step += 1) {
+      const candidateIdx = currentIdx - step
+      if (!failedImageIdsRef.current.has(currentQueue[candidateIdx].id)) {
+        return candidateIdx
+      }
+    }
+    return currentIdx - 1
+  }, [])
+
+  const nextSlide = useCallback(
+    (startOffsetPx = 0) => {
+      if (stageRef.current) return
+      const currentQueue = queueRef.current
+      const currentIdx = activeIndexRef.current
+      const currentItem = currentQueue[currentIdx]
+      if (!currentItem || currentQueue.length < 2) return
+
+      const candidateIdx = pickNextTargetIndex(currentQueue, currentIdx)
+      let targetItem
+      let targetIndex
+      let reshuffledQueue = null
+
+      if (candidateIdx < currentQueue.length) {
+        targetIndex = candidateIdx
+        targetItem = currentQueue[targetIndex]
+      } else {
+        // Completed one randomized pass: build a fresh random queue avoiding back-to-back repeats
+        const healthyItems = currentQueue.filter(
+          (item) =>
+            item.id === currentItem.id ||
+            !failedImageIdsRef.current.has(item.id)
+        )
+        const pool = healthyItems.length >= 2 ? healthyItems : currentQueue
+        reshuffledQueue = shuffleMediaItems(pool, currentItem.id)
+        targetIndex = 0
+        targetItem = reshuffledQueue[0]
+      }
+
+      launchStage({
+        direction: 'next',
+        items: [currentItem, targetItem],
+        startTransform: startOffsetPx
+          ? `translate3d(${startOffsetPx}px, 0, 0)`
+          : 'translate3d(0%, 0, 0)',
+        targetTransform: 'translate3d(-100%, 0, 0)',
+        targetItem,
+        targetIndex,
+        reshuffledQueue,
+        phase: 'prepare',
+      })
     },
-    [clearTimers, pauseAllVideos, handleTransitionEnd]
+    [launchStage, pickNextTargetIndex]
   )
 
-  const nextSlide = useCallback(() => {
-    if (isTransitioningRef.current) return
-    const nextIdx = (activeIndexRef.current + 1) % trainingMedia.length
-    const nextPos = trackPositionRef.current + 1
-    navigateTo(nextPos, nextIdx)
-  }, [navigateTo])
+  const prevSlide = useCallback(
+    (startOffsetPx = 0) => {
+      if (stageRef.current) return
+      const currentQueue = queueRef.current
+      const currentIdx = activeIndexRef.current
+      const currentItem = currentQueue[currentIdx]
+      if (!currentItem || currentQueue.length < 2) return
 
-  const prevSlide = useCallback(() => {
-    if (isTransitioningRef.current) return
-    const prevIdx =
-      (activeIndexRef.current - 1 + trainingMedia.length) % trainingMedia.length
-    const prevPos = trackPositionRef.current - 1
-    navigateTo(prevPos, prevIdx)
-  }, [navigateTo])
+      let targetIndex
+      let targetItem
+      let reshuffledQueue = null
+
+      if (currentIdx > 0) {
+        const candidateIdx = pickPrevTargetIndex(currentQueue, currentIdx)
+        targetIndex = candidateIdx >= 0 ? candidateIdx : currentQueue.length - 1
+        targetItem = currentQueue[targetIndex]
+      } else {
+        reshuffledQueue = shuffleMediaItems(currentQueue, currentItem.id)
+        targetItem = reshuffledQueue[reshuffledQueue.length - 1]
+        if (targetItem.id === currentItem.id && reshuffledQueue.length > 1) {
+          targetItem = reshuffledQueue[0]
+          targetIndex = 0
+        } else {
+          targetIndex = reshuffledQueue.length - 1
+        }
+      }
+
+      launchStage({
+        direction: 'prev',
+        items: [targetItem, currentItem],
+        startTransform: startOffsetPx
+          ? `translate3d(calc(-100% + ${startOffsetPx}px), 0, 0)`
+          : 'translate3d(-100%, 0, 0)',
+        targetTransform: 'translate3d(0%, 0, 0)',
+        targetItem,
+        targetIndex,
+        reshuffledQueue,
+        phase: 'prepare',
+      })
+    },
+    [launchStage, pickPrevTargetIndex]
+  )
 
   const goToSlide = useCallback(
     (targetIdx) => {
-      if (targetIdx === activeIndexRef.current || isTransitioningRef.current) return
-      navigateTo(targetIdx + 1, targetIdx)
+      if (stageRef.current) return
+      const currentQueue = queueRef.current
+      const currentIdx = activeIndexRef.current
+      if (
+        targetIdx === currentIdx ||
+        targetIdx < 0 ||
+        targetIdx >= currentQueue.length
+      ) {
+        return
+      }
+      const currentItem = currentQueue[currentIdx]
+      const targetItem = currentQueue[targetIdx]
+      const direction = targetIdx > currentIdx ? 'next' : 'prev'
+
+      launchStage({
+        direction,
+        items:
+          direction === 'next'
+            ? [currentItem, targetItem]
+            : [targetItem, currentItem],
+        startTransform:
+          direction === 'next'
+            ? 'translate3d(0%, 0, 0)'
+            : 'translate3d(-100%, 0, 0)',
+        targetTransform:
+          direction === 'next'
+            ? 'translate3d(-100%, 0, 0)'
+            : 'translate3d(0%, 0, 0)',
+        targetItem,
+        targetIndex: targetIdx,
+        reshuffledQueue: null,
+        phase: 'prepare',
+      })
     },
-    [navigateTo]
+    [launchStage]
   )
 
   // Autoplay progression for current active slide
   useEffect(() => {
-    if (isTransitioning || isDragging) return
+    if (stage || isDragging) return
 
-    const currentMedia = trainingMedia[activeIndex]
+    const currentMedia = queue[activeIndex]
     if (!currentMedia) return
 
     clearTimers()
 
-    // When hovered or focused, pause auto progression
-    if (isHovered || isFocused) {
-      return
-    }
-
     if (currentMedia.type === 'image') {
+      if (isHovered || isFocused) {
+        return
+      }
+      const delay = failedImageIdsRef.current.has(currentMedia.id)
+        ? 450
+        : SLIDE_IMAGE_DURATION_MS
       autoPlayTimerRef.current = setTimeout(() => {
         nextSlide()
-      }, 3500)
+      }, delay)
 
       return () => {
         if (autoPlayTimerRef.current) {
@@ -261,25 +608,36 @@ function TrainingCarousel() {
     }
 
     if (currentMedia.type === 'video') {
-      const video = videoRefs.current[activeIndex]
-      if (video) {
-        video.muted = true
-        video.defaultMuted = true
-        video.playsInline = true
-
-        const playPromise = video.play()
-        if (playPromise && typeof playPromise.catch === 'function') {
-          playPromise.catch(() => {
-            // Autoplay policy fallback: advance after 3.5s
-            autoPlayTimerRef.current = setTimeout(() => {
-              nextSlide()
-            }, 3500)
-          })
-        }
+      const video = videoRefs.current[currentMedia.id]
+      if (!video) {
+        autoPlayTimerRef.current = setTimeout(() => {
+          nextSlide()
+        }, SLIDE_IMAGE_DURATION_MS)
+        return () => clearTimers()
       }
 
-      // Max timeout fallback: 45s for slide 4 (40s video), 12s for slide 3 (7s video)
-      const maxVideoDuration = activeIndex === 3 ? 45000 : 12000
+      video.muted = true
+      video.defaultMuted = true
+      video.playsInline = true
+      try {
+        video.currentTime = 0
+      } catch {
+        // ignore
+      }
+
+      const playPromise = video.play()
+      if (playPromise && typeof playPromise.catch === 'function') {
+        playPromise.catch(() => {
+          autoPlayTimerRef.current = setTimeout(() => {
+            nextSlide()
+          }, SLIDE_IMAGE_DURATION_MS)
+        })
+      }
+
+      const maxVideoDuration =
+        Number.isFinite(video.duration) && video.duration > 0
+          ? Math.ceil(video.duration * 1000) + 1200
+          : currentMedia.maxDurationMs || 45000
       const safetyVideoTimer = setTimeout(() => {
         nextSlide()
       }, maxVideoDuration)
@@ -289,8 +647,9 @@ function TrainingCarousel() {
       }
     }
   }, [
+    queue,
     activeIndex,
-    isTransitioning,
+    stage,
     isDragging,
     isHovered,
     isFocused,
@@ -302,18 +661,24 @@ function TrainingCarousel() {
   useEffect(() => {
     return () => {
       clearTimers()
-      pauseAllVideos()
+      pauseVideos(null)
     }
-  }, [clearTimers, pauseAllVideos])
+  }, [clearTimers, pauseVideos])
 
   // Drag / Swipe handling
   const handlePointerDown = (event) => {
-    if (isTransitioningRef.current) return
+    if (stageRef.current) return
     if (event.pointerType === 'mouse' && event.button !== 0) return
+
+    isTouchInteractionRef.current = event.pointerType !== 'mouse'
+    if (isTouchInteractionRef.current && isHovered) {
+      setIsHovered(false)
+    }
 
     isDraggingRef.current = true
     setIsDragging(true)
     pointerStartRef.current = event.clientX
+    dragOffsetRef.current = 0
     setDragOffset(0)
     try {
       event.currentTarget.setPointerCapture(event.pointerId)
@@ -325,6 +690,7 @@ function TrainingCarousel() {
   const handlePointerMove = (event) => {
     if (!isDraggingRef.current) return
     const diff = event.clientX - pointerStartRef.current
+    dragOffsetRef.current = diff
     setDragOffset(diff)
   }
 
@@ -341,22 +707,111 @@ function TrainingCarousel() {
     const finalOffset =
       Number.isFinite(event.clientX) && pointerStartRef.current
         ? event.clientX - pointerStartRef.current
-        : dragOffset
-    const threshold = 50
+        : dragOffsetRef.current
+    dragOffsetRef.current = 0
     setDragOffset(0)
-    if (finalOffset < -threshold) {
-      nextSlide()
-    } else if (finalOffset > threshold) {
-      prevSlide()
+
+    if (finalOffset < -DRAG_THRESHOLD_PX) {
+      nextSlide(finalOffset)
+      return
+    }
+    if (finalOffset > DRAG_THRESHOLD_PX) {
+      prevSlide(finalOffset)
+      return
+    }
+
+    if (finalOffset !== 0 && queueRef.current.length >= 2) {
+      const currentIdx = activeIndexRef.current
+      const currentItem = queueRef.current[currentIdx]
+      if (finalOffset < 0) {
+        const nextPreview =
+          queueRef.current[(currentIdx + 1) % queueRef.current.length]
+        if (nextPreview.id !== currentItem.id) {
+          launchStage({
+            direction: 'cancel',
+            items: [currentItem, nextPreview],
+            startTransform: `translate3d(${finalOffset}px, 0, 0)`,
+            targetTransform: 'translate3d(0%, 0, 0)',
+            targetItem: currentItem,
+            targetIndex: currentIdx,
+            reshuffledQueue: null,
+            phase: 'prepare',
+          })
+        }
+      } else {
+        const prevPreview =
+          queueRef.current[
+            (currentIdx - 1 + queueRef.current.length) % queueRef.current.length
+          ]
+        if (prevPreview.id !== currentItem.id) {
+          launchStage({
+            direction: 'cancel',
+            items: [prevPreview, currentItem],
+            startTransform: `translate3d(calc(-100% + ${finalOffset}px), 0, 0)`,
+            targetTransform: 'translate3d(-100%, 0, 0)',
+            targetItem: currentItem,
+            targetIndex: currentIdx,
+            reshuffledQueue: null,
+            phase: 'prepare',
+          })
+        }
+      }
     }
   }
+
+  const activeItem = queue[activeIndex] || queue[0]
+  const prevDragPreview =
+    queue.length > 1
+      ? queue[(activeIndex - 1 + queue.length) % queue.length]
+      : activeItem
+  const nextDragPreview =
+    queue.length > 1 ? queue[(activeIndex + 1) % queue.length] : activeItem
+
+  let renderedSlides = [activeItem]
+  let trackTransform = 'translate3d(0%, 0, 0)'
+
+  if (stage) {
+    renderedSlides = stage.items
+    trackTransform =
+      stage.phase === 'prepare' ? stage.startTransform : stage.targetTransform
+  } else if (isDragging && queue.length > 1) {
+    if (dragOffset > 0) {
+      renderedSlides = [prevDragPreview, activeItem]
+      trackTransform = `translate3d(calc(-100% + ${dragOffset}px), 0, 0)`
+    } else {
+      renderedSlides = [activeItem, nextDragPreview]
+      trackTransform = `translate3d(${dragOffset}px, 0, 0)`
+    }
+  }
+
+  const isAnimating = Boolean(stage)
+  const displayIndex =
+    stage && stage.direction !== 'cancel' ? stage.targetIndex : activeIndex
+  const displayTotal = stage?.reshuffledQueue
+    ? Math.max(queue.length, stage.reshuffledQueue.length)
+    : queue.length
+
+  const trackClassName = [
+    'training-media-track',
+    isDragging ? 'is-dragging' : '',
+    stage?.phase === 'prepare' ? 'is-instant' : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
 
   return (
     <div className="training-showcase">
       <div
         className={`training-media${isDragging ? ' is-dragging' : ''}`}
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
+        onMouseEnter={() => {
+          if (!isTouchInteractionRef.current) {
+            setIsHovered(true)
+          }
+        }}
+        onMouseLeave={() => {
+          isTouchInteractionRef.current = false
+          setIsHovered(false)
+        }}
         onFocus={() => setIsFocused(true)}
         onBlur={() => setIsFocused(false)}
         onPointerDown={handlePointerDown}
@@ -366,31 +821,39 @@ function TrainingCarousel() {
       >
         <div
           ref={trackRef}
-          className={`training-media-track${isDragging ? ' is-dragging' : ''}`}
-          style={{
-            transform: isDragging
-              ? `translate3d(calc(-${trackPosition * 100}% + ${dragOffset}px), 0, 0)`
-              : `translate3d(-${trackPosition * 100}%, 0, 0)`,
-          }}
-          onTransitionEnd={handleTransitionEnd}
+          className={trackClassName}
+          style={{ transform: trackTransform }}
+          onTransitionEnd={completeTransition}
         >
-          {trackItems.map((item, idx) => {
-            const isActual = item.originalIndex === activeIndex
+          {renderedSlides.map((item) => {
+            const isActiveSlide =
+              !stage && activeItem && item.id === activeItem.id
             return (
-              <div key={`${item.key}-${idx}`} className="training-media-slide">
+              <div key={item.id} className="training-media-slide">
                 {item.type === 'image' ? (
                   <img
                     src={item.src}
                     alt={item.alt}
                     draggable="false"
                     loading="eager"
+                    onError={() => {
+                      failedImageIdsRef.current.add(item.id)
+                      if (isActiveSlide && queueRef.current.length > 1) {
+                        clearTimers()
+                        autoPlayTimerRef.current = setTimeout(() => {
+                          nextSlide()
+                        }, 400)
+                      }
+                    }}
                   />
                 ) : (
                   <div className="training-video-container">
                     <video
                       ref={(el) => {
-                        if (!item.key.startsWith('clone')) {
-                          videoRefs.current[item.originalIndex] = el
+                        if (el) {
+                          videoRefs.current[item.id] = el
+                        } else {
+                          delete videoRefs.current[item.id]
                         }
                       }}
                       src={item.src}
@@ -402,10 +865,10 @@ function TrainingCarousel() {
                       disablePictureInPicture
                       disableRemotePlayback
                       onEnded={() => {
-                        if (isActual) nextSlide()
+                        if (isActiveSlide) nextSlide()
                       }}
                       onError={() => {
-                        if (isActual) nextSlide()
+                        if (isActiveSlide) nextSlide()
                       }}
                       className="training-video-element"
                       aria-label={item.alt}
@@ -419,8 +882,8 @@ function TrainingCarousel() {
 
         {/* Counter Overlay */}
         <div className="training-media-overlay">
-          <span>{String(activeIndex + 1).padStart(2, '0')}</span>
-          <span>{String(trainingMedia.length).padStart(2, '0')}</span>
+          <span>{String(displayIndex + 1).padStart(2, '0')}</span>
+          <span>{String(displayTotal).padStart(2, '0')}</span>
         </div>
       </div>
 
@@ -429,23 +892,23 @@ function TrainingCarousel() {
         <button
           type="button"
           className="training-control-button"
-          onClick={prevSlide}
-          disabled={isTransitioning}
+          onClick={() => prevSlide(0)}
+          disabled={isAnimating}
           aria-label="Previous training media"
         >
           ←
         </button>
 
         <div className="training-indicators">
-          {trainingMedia.map((media, index) => {
-            const isActive = index === activeIndex
+          {queue.map((media, index) => {
+            const isActive = index === displayIndex
             return (
               <button
-                key={`${media.src}-${index}`}
+                key={media.id}
                 type="button"
                 className={`training-indicator${isActive ? ' active' : ''}`}
                 onClick={() => goToSlide(index)}
-                disabled={isTransitioning}
+                disabled={isAnimating}
                 aria-label={`View training media ${index + 1}`}
                 aria-current={isActive ? 'true' : undefined}
               />
@@ -456,8 +919,8 @@ function TrainingCarousel() {
         <button
           type="button"
           className="training-control-button"
-          onClick={nextSlide}
-          disabled={isTransitioning}
+          onClick={() => nextSlide(0)}
+          disabled={isAnimating}
           aria-label="Next training media"
         >
           →
