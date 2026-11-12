@@ -338,13 +338,16 @@ function TrainingCarousel() {
       // ignore
     }
 
+    const finalOffset =
+      Number.isFinite(event.clientX) && pointerStartRef.current
+        ? event.clientX - pointerStartRef.current
+        : dragOffset
     const threshold = 50
-    if (dragOffset < -threshold) {
+    setDragOffset(0)
+    if (finalOffset < -threshold) {
       nextSlide()
-    } else if (dragOffset > threshold) {
+    } else if (finalOffset > threshold) {
       prevSlide()
-    } else {
-      setDragOffset(0)
     }
   }
 
@@ -363,14 +366,11 @@ function TrainingCarousel() {
       >
         <div
           ref={trackRef}
-          className="training-media-track"
+          className={`training-media-track${isDragging ? ' is-dragging' : ''}`}
           style={{
             transform: isDragging
               ? `translate3d(calc(-${trackPosition * 100}% + ${dragOffset}px), 0, 0)`
               : `translate3d(-${trackPosition * 100}%, 0, 0)`,
-            transition: isDragging
-              ? 'none'
-              : 'transform 600ms cubic-bezier(0.22, 1, 0.36, 1)',
           }}
           onTransitionEnd={handleTransitionEnd}
         >
@@ -794,76 +794,6 @@ Hero text rendering
         padding-top: 150px;
       }
 
-      /*
-       * =================================================
-       * TRAINING SLIDESHOW
-       * =================================================
-       *
-       * The slideshow elements are positioned on top of
-       * one another. Their physical horizontal movement
-       * is controlled by one native CSS transform
-       * transition on the actual slide wrappers.
-       */
-
-      .portfolio-app .training-media {
-        position: relative;
-
-        width: 100%;
-
-        aspect-ratio: 16 / 9;
-
-        overflow: hidden;
-
-        isolation: isolate;
-
-        background: #05070b;
-      }
-
-      .portfolio-app .training-media-slide {
-        position: absolute;
-
-        inset: 0;
-
-        width: 100%;
-        height: 100%;
-
-        overflow: hidden;
-
-        background: #05070b;
-
-        will-change: transform;
-
-        backface-visibility: hidden;
-        -webkit-backface-visibility: hidden;
-      }
-
-      .portfolio-app .training-media-current {
-        z-index: 1;
-      }
-
-      .portfolio-app .training-media-incoming {
-        z-index: 2;
-      }
-
-      .portfolio-app
-        .training-media-slide
-        img,
-      .portfolio-app
-        .training-media-slide
-        video {
-        width: 100% !important;
-
-        height: 100% !important;
-
-        display: block;
-
-        object-fit: cover !important;
-
-        object-position:
-          center center !important;
-
-        background: #05070b;
-      }
 
       /*
        * =================================================
@@ -1476,13 +1406,7 @@ Hero text rendering
        * visual design rather than page movement.
        */
 
-      @media (prefers-reduced-motion: reduce) {
-        .portfolio-app
-          .training-media-slide {
-          transition:
-            none !important;
-        }
-      }
+
     `}
   </style>
 

@@ -997,6 +997,10 @@ main {
   transition: transform 600ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+.training-media-track.is-dragging {
+  transition: none;
+}
+
 .training-media-slide {
   flex: 0 0 100%;
   width: 100%;
@@ -1968,7 +1972,7 @@ button:focus:not(:focus-visible) {
     scroll-behavior: auto;
   }
 
-  * {
+  *:not(.training-media-track) {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
@@ -1984,10 +1988,5 @@ button:focus:not(:focus-visible) {
     animation: none !important;
 
     opacity: 1;
-  }
-
-  .training-media-slide,
-  .training-media-track {
-    transition: none !important;
   }
 }
