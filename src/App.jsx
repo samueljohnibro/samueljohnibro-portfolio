@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
 const trainingMedia = [
   {
@@ -14,11 +14,13 @@ const trainingMedia = [
   {
     type: 'video',
     src: '/assets/Cloud Computing Training 3.mp4',
+    poster: '/assets/Cloud Computing Training 2.png',
     alt: 'AWS Cloud Computing Training session at Management Edge LTD',
   },
   {
     type: 'video',
     src: '/assets/Cloud Computing Training 4.mp4',
+    poster: '/assets/Cloud Computing Training 5.png',
     alt: 'AWS Cloud Computing Training session at Management Edge LTD',
   },
   {
@@ -37,13 +39,7 @@ const trainingMedia = [
     alt: 'AWS Cloud Computing Training presentation slides',
   },
 ]
-/*
-=========================
-Training configuration
-=========================
- */
-const SLIDE_DURATION = 700
-const IMAGE_DURATION = 3500
+
 /*
 =========================
 Hero typewriter configuration
@@ -61,6 +57,416 @@ Portfolio typography
  */
 const PORTFOLIO_FONT =
   'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+
+/* =========================================================
+   Training Carousel
+   ========================================================= */
+
+function TrainingCarousel() {
+  const [activeIndex, setActiveIndex] = useState(0)
+  const [trackPosition, setTrackPosition] = useState(1)
+  const [isTransitioning, setIsTransitioning] = useState(false)
+  const [isHovered, setIsHovered] = useState(false)
+  const [isFocused, setIsFocused] = useState(false)
+  const [dragOffset, setDragOffset] = useState(0)
+  const [isDragging, setIsDragging] = useState(false)
+
+  const trackRef = useRef(null)
+  const autoPlayTimerRef = useRef(null)
+  const transitionTimerRef = useRef(null)
+  const videoRefs = useRef({})
+  const pointerStartRef = useRef(0)
+  const isDraggingRef = useRef(false)
+  const activeIndexRef = useRef(0)
+  const trackPositionRef = useRef(1)
+  const isTransitioningRef = useRef(false)
+
+  useEffect(() => {
+    activeIndexRef.current = activeIndex
+  }, [activeIndex])
+
+  useEffect(() => {
+    trackPositionRef.current = trackPosition
+  }, [trackPosition])
+
+  useEffect(() => {
+    isTransitioningRef.current = isTransitioning
+  }, [isTransitioning])
+
+  // Track items: 1 clone before (slide 6) + 7 real slides (0..6) + 1 clone after (slide 0)
+  const trackItems = [
+    {
+      ...trainingMedia[trainingMedia.length - 1],
+      originalIndex: trainingMedia.length - 1,
+      key: 'clone-prev',
+    },
+    ...trainingMedia.map((item, idx) => ({
+      ...item,
+      originalIndex: idx,
+      key: `real-${idx}`,
+    })),
+    {
+      ...trainingMedia[0],
+      originalIndex: 0,
+      key: 'clone-next',
+    },
+  ]
+
+  const clearTimers = useCallback(() => {
+    if (autoPlayTimerRef.current) {
+      clearTimeout(autoPlayTimerRef.current)
+      autoPlayTimerRef.current = null
+    }
+    if (transitionTimerRef.current) {
+      clearTimeout(transitionTimerRef.current)
+      transitionTimerRef.current = null
+    }
+  }, [])
+
+  const pauseAllVideos = useCallback(() => {
+    Object.values(videoRefs.current).forEach((video) => {
+      if (video) {
+        video.pause()
+        try {
+          video.currentTime = 0
+        } catch {
+          // ignore
+        }
+      }
+    })
+  }, [])
+
+  // Transition completion handler (both onTransitionEnd and safety timer)
+  const handleTransitionEnd = useCallback(
+    (event) => {
+      if (
+        event &&
+        (event.target !== trackRef.current || event.propertyName !== 'transform')
+      ) {
+        return
+      }
+
+      if (transitionTimerRef.current) {
+        clearTimeout(transitionTimerRef.current)
+        transitionTimerRef.current = null
+      }
+
+      isTransitioningRef.current = false
+      setIsTransitioning(false)
+
+      const currentPos = trackPositionRef.current
+
+      // Check wrap-around clone positions
+      if (currentPos >= trackItems.length - 1) {
+        // Reached Clone of Slide 0 (position 8), wrap silently to real Slide 0 (position 1)
+        if (trackRef.current) {
+          trackRef.current.style.transition = 'none'
+          trackRef.current.style.transform = 'translate3d(-100%, 0, 0)'
+          void trackRef.current.offsetHeight // force layout
+          trackRef.current.style.transition = ''
+        }
+        trackPositionRef.current = 1
+        setTrackPosition(1)
+        return
+      }
+
+      if (currentPos <= 0) {
+        // Reached Clone of Slide 6 (position 0), wrap silently to real Slide 6 (position 7)
+        const realLastPos = trackItems.length - 2
+        if (trackRef.current) {
+          trackRef.current.style.transition = 'none'
+          trackRef.current.style.transform = `translate3d(-${realLastPos * 100}%, 0, 0)`
+          void trackRef.current.offsetHeight // force layout
+          trackRef.current.style.transition = ''
+        }
+        trackPositionRef.current = realLastPos
+        setTrackPosition(realLastPos)
+        return
+      }
+    },
+    [trackItems.length]
+  )
+
+  const navigateTo = useCallback(
+    (targetPosition, targetIndex) => {
+      if (isTransitioningRef.current) return
+
+      clearTimers()
+      pauseAllVideos()
+
+      isTransitioningRef.current = true
+      setIsTransitioning(true)
+      trackPositionRef.current = targetPosition
+      setTrackPosition(targetPosition)
+      setActiveIndex(targetIndex)
+
+      if (transitionTimerRef.current) {
+        clearTimeout(transitionTimerRef.current)
+      }
+      transitionTimerRef.current = setTimeout(() => {
+        handleTransitionEnd()
+      }, 650)
+    },
+    [clearTimers, pauseAllVideos, handleTransitionEnd]
+  )
+
+  const nextSlide = useCallback(() => {
+    if (isTransitioningRef.current) return
+    const nextIdx = (activeIndexRef.current + 1) % trainingMedia.length
+    const nextPos = trackPositionRef.current + 1
+    navigateTo(nextPos, nextIdx)
+  }, [navigateTo])
+
+  const prevSlide = useCallback(() => {
+    if (isTransitioningRef.current) return
+    const prevIdx =
+      (activeIndexRef.current - 1 + trainingMedia.length) % trainingMedia.length
+    const prevPos = trackPositionRef.current - 1
+    navigateTo(prevPos, prevIdx)
+  }, [navigateTo])
+
+  const goToSlide = useCallback(
+    (targetIdx) => {
+      if (targetIdx === activeIndexRef.current || isTransitioningRef.current) return
+      navigateTo(targetIdx + 1, targetIdx)
+    },
+    [navigateTo]
+  )
+
+  // Autoplay progression for current active slide
+  useEffect(() => {
+    if (isTransitioning || isDragging) return
+
+    const currentMedia = trainingMedia[activeIndex]
+    if (!currentMedia) return
+
+    clearTimers()
+
+    // When hovered or focused, pause auto progression
+    if (isHovered || isFocused) {
+      return
+    }
+
+    if (currentMedia.type === 'image') {
+      autoPlayTimerRef.current = setTimeout(() => {
+        nextSlide()
+      }, 3500)
+
+      return () => {
+        if (autoPlayTimerRef.current) {
+          clearTimeout(autoPlayTimerRef.current)
+          autoPlayTimerRef.current = null
+        }
+      }
+    }
+
+    if (currentMedia.type === 'video') {
+      const video = videoRefs.current[activeIndex]
+      if (video) {
+        video.muted = true
+        video.defaultMuted = true
+        video.playsInline = true
+
+        const playPromise = video.play()
+        if (playPromise && typeof playPromise.catch === 'function') {
+          playPromise.catch(() => {
+            // Autoplay policy fallback: advance after 3.5s
+            autoPlayTimerRef.current = setTimeout(() => {
+              nextSlide()
+            }, 3500)
+          })
+        }
+      }
+
+      // Max timeout fallback: 45s for slide 4 (40s video), 12s for slide 3 (7s video)
+      const maxVideoDuration = activeIndex === 3 ? 45000 : 12000
+      const safetyVideoTimer = setTimeout(() => {
+        nextSlide()
+      }, maxVideoDuration)
+
+      return () => {
+        clearTimeout(safetyVideoTimer)
+      }
+    }
+  }, [
+    activeIndex,
+    isTransitioning,
+    isDragging,
+    isHovered,
+    isFocused,
+    nextSlide,
+    clearTimers,
+  ])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      clearTimers()
+      pauseAllVideos()
+    }
+  }, [clearTimers, pauseAllVideos])
+
+  // Drag / Swipe handling
+  const handlePointerDown = (event) => {
+    if (isTransitioningRef.current) return
+    if (event.pointerType === 'mouse' && event.button !== 0) return
+
+    isDraggingRef.current = true
+    setIsDragging(true)
+    pointerStartRef.current = event.clientX
+    setDragOffset(0)
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId)
+    } catch {
+      // ignore
+    }
+  }
+
+  const handlePointerMove = (event) => {
+    if (!isDraggingRef.current) return
+    const diff = event.clientX - pointerStartRef.current
+    setDragOffset(diff)
+  }
+
+  const handlePointerEnd = (event) => {
+    if (!isDraggingRef.current) return
+    isDraggingRef.current = false
+    setIsDragging(false)
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    } catch {
+      // ignore
+    }
+
+    const threshold = 50
+    if (dragOffset < -threshold) {
+      nextSlide()
+    } else if (dragOffset > threshold) {
+      prevSlide()
+    } else {
+      setDragOffset(0)
+    }
+  }
+
+  return (
+    <div className="training-showcase">
+      <div
+        className={`training-media${isDragging ? ' is-dragging' : ''}`}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+        onFocus={() => setIsFocused(true)}
+        onBlur={() => setIsFocused(false)}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerEnd}
+        onPointerCancel={handlePointerEnd}
+      >
+        <div
+          ref={trackRef}
+          className="training-media-track"
+          style={{
+            transform: isDragging
+              ? `translate3d(calc(-${trackPosition * 100}% + ${dragOffset}px), 0, 0)`
+              : `translate3d(-${trackPosition * 100}%, 0, 0)`,
+            transition: isDragging
+              ? 'none'
+              : 'transform 600ms cubic-bezier(0.22, 1, 0.36, 1)',
+          }}
+          onTransitionEnd={handleTransitionEnd}
+        >
+          {trackItems.map((item, idx) => {
+            const isActual = item.originalIndex === activeIndex
+            return (
+              <div key={`${item.key}-${idx}`} className="training-media-slide">
+                {item.type === 'image' ? (
+                  <img
+                    src={item.src}
+                    alt={item.alt}
+                    draggable="false"
+                    loading="eager"
+                  />
+                ) : (
+                  <div className="training-video-container">
+                    <video
+                      ref={(el) => {
+                        if (!item.key.startsWith('clone')) {
+                          videoRefs.current[item.originalIndex] = el
+                        }
+                      }}
+                      src={item.src}
+                      poster={item.poster}
+                      muted
+                      playsInline
+                      preload="auto"
+                      controls={false}
+                      disablePictureInPicture
+                      disableRemotePlayback
+                      onEnded={() => {
+                        if (isActual) nextSlide()
+                      }}
+                      onError={() => {
+                        if (isActual) nextSlide()
+                      }}
+                      className="training-video-element"
+                      aria-label={item.alt}
+                    />
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Counter Overlay */}
+        <div className="training-media-overlay">
+          <span>{String(activeIndex + 1).padStart(2, '0')}</span>
+          <span>{String(trainingMedia.length).padStart(2, '0')}</span>
+        </div>
+      </div>
+
+      {/* Controls */}
+      <div className="training-controls">
+        <button
+          type="button"
+          className="training-control-button"
+          onClick={prevSlide}
+          disabled={isTransitioning}
+          aria-label="Previous training media"
+        >
+          ←
+        </button>
+
+        <div className="training-indicators">
+          {trainingMedia.map((media, index) => {
+            const isActive = index === activeIndex
+            return (
+              <button
+                key={`${media.src}-${index}`}
+                type="button"
+                className={`training-indicator${isActive ? ' active' : ''}`}
+                onClick={() => goToSlide(index)}
+                disabled={isTransitioning}
+                aria-label={`View training media ${index + 1}`}
+                aria-current={isActive ? 'true' : undefined}
+              />
+            )
+          })}
+        </div>
+
+        <button
+          type="button"
+          className="training-control-button"
+          onClick={nextSlide}
+          disabled={isTransitioning}
+          aria-label="Next training media"
+        >
+          →
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function App() {
   /*
 =========================
@@ -68,15 +474,6 @@ Navigation state
 =========================
    */
   const [isNavOpen, setIsNavOpen] = useState(false)
-  /*
-=========================
-Training slideshow state
-=========================
-   */
-  const [activeMedia, setActiveMedia] = useState(0)
-  const [incomingMedia, setIncomingMedia] = useState(null)
-  const [slideDirection, setSlideDirection] = useState('next')
-  const [isTransitioning, setIsTransitioning] = useState(false)
   /*
 =========================
 Hero typewriter state
@@ -92,35 +489,13 @@ Hero typewriter state
 Refs
 =========================
    */
-  const transitionTimerRef = useRef(null)
-  const transitionIdRef = useRef(0)
-  const imageTimerRef = useRef(null)
   const typewriterTimerRef = useRef(null)
-  const videoRefs = useRef({})
-  const currentSlideRef = useRef(null)
-  const incomingSlideRef = useRef(null)
   const heroSectionRef = useRef(null)
   /*
 =========================
 Cleanup helpers
 =========================
    */
-  const clearTransitionTimer = () => {
-    if (transitionTimerRef.current) {
-      window.clearTimeout(
-        transitionTimerRef.current
-      )
-      transitionTimerRef.current = null
-    }
-  }
-  const clearImageTimer = () => {
-    if (imageTimerRef.current) {
-      window.clearTimeout(
-        imageTimerRef.current
-      )
-      imageTimerRef.current = null
-    }
-  }
   const clearTypewriterTimer = () => {
     if (typewriterTimerRef.current) {
       window.clearTimeout(
@@ -252,523 +627,6 @@ blinking behavior reliable after typing finishes.
       clearTypewriterTimer()
     }
   }, [])
-  /*
-=========================
-Video helpers
-=========================
-   */
-  const registerVideo = (
-    index,
-    element
-  ) => {
-    if (element) {
-      videoRefs.current[index] =
-        element
-    } else {
-      delete videoRefs.current[index]
-    }
-  }
-  const pauseAllVideos = () => {
-    Object.values(
-      videoRefs.current
-    ).forEach((video) => {
-      if (!video) {
-        return
-      }
-  video.pause()
-})
-  }
-  /*
-=========================
-Finish slideshow transition
-=========================
-   */
-  const finishTransition = useCallback((
-    nextIndex,
-    transitionId
-  ) => {
-    if (
-      transitionId !== transitionIdRef.current
-    ) {
-      return
-    }
-    clearTransitionTimer()
-
-    pauseAllVideos()
-
-    setActiveMedia(nextIndex)
-    setIncomingMedia(null)
-    setIsTransitioning(false)
-  }, [])
-  /*
-=========================
-Training slideshow
-=========================
-
-The outgoing and incoming media remain mounted
-together during the transition.
-
-NEXT:
-
-Current:   0% -> -100%
-Incoming: +100% -> 0%
-
-PREVIOUS:
-
-Current:   0% -> +100%
-Incoming: -100% -> 0%
-
-Native CSS transform transitions move both slide
-elements simultaneously after their initial positions
-have been committed to the DOM.
-   */
-  const changeMedia = useCallback((
-    nextIndex,
-    direction = 'next'
-  ) => {
-    if (
-      nextIndex === activeMedia ||
-      nextIndex < 0 ||
-      nextIndex >= trainingMedia.length ||
-      isTransitioning
-    ) {
-      return
-    }
-    clearTransitionTimer()
-    clearImageTimer()
-
-    pauseAllVideos()
-
-    transitionIdRef.current += 1
-
-    const transitionId =
-      transitionIdRef.current
-
-    setSlideDirection(direction)
-    setIncomingMedia(nextIndex)
-    setIsTransitioning(true)
-
-    /*
-     * Safety fallback.
-     *
-     * The native CSS transition and transitionend event are
-     * responsible for normal completion. This timer exists
-     * only as a browser-safety mechanism.
-     */
-
-    transitionTimerRef.current =
-      window.setTimeout(() => {
-        if (
-          transitionId !==
-          transitionIdRef.current
-        ) {
-          return
-        }
-
-        finishTransition(
-          nextIndex,
-          transitionId
-        )
-      }, SLIDE_DURATION + 100)
-  }, [activeMedia, finishTransition, isTransitioning])
-  /*
-=========================
-Physical slide transition
-=========================
-
-React first mounts both slide wrappers in their exact
-starting positions. A layout-safe effect then forces
-that initial state to be acknowledged before the next
-animation frame moves both elements to their
-destinations with one native CSS transform transition.
-   */
-  useLayoutEffect(() => {
-    if (
-      !isTransitioning ||
-      incomingMedia === null
-    ) {
-      return undefined
-    }
-    const currentSlide =
-      currentSlideRef.current
-
-    const incomingSlide =
-      incomingSlideRef.current
-
-    if (
-      !currentSlide ||
-      !incomingSlide
-    ) {
-      return undefined
-    }
-
-    const transitionId =
-      transitionIdRef.current
-
-    const expectedIncomingMedia =
-      incomingMedia
-
-    const reducedMotion =
-      typeof window !== 'undefined' &&
-      window.matchMedia &&
-      window.matchMedia(
-        '(prefers-reduced-motion: reduce)'
-      ).matches
-
-    if (reducedMotion) {
-      finishTransition(
-        incomingMedia,
-        transitionId
-      )
-
-      return undefined
-    }
-
-    const handleTransitionEnd = (
-      event
-    ) => {
-      if (
-        event.target !== incomingSlide ||
-        event.propertyName !== 'transform' ||
-        !isTransitioning ||
-        incomingMedia !==
-          expectedIncomingMedia ||
-        transitionId !==
-          transitionIdRef.current
-      ) {
-        return
-      }
-
-      finishTransition(
-        expectedIncomingMedia,
-        transitionId
-      )
-    }
-
-    incomingSlide.addEventListener(
-      'transitionend',
-      handleTransitionEnd
-    )
-
-    /*
-     * Force a layout read so the browser has acknowledged
-     * the exact initial transform positions before the next
-     * animation frame applies the destination transforms.
-     */
-
-    currentSlide.offsetWidth
-
-    const frameId =
-      window.requestAnimationFrame(() => {
-        if (
-          transitionId !==
-          transitionIdRef.current ||
-          !isTransitioning ||
-          incomingMedia === null
-        ) {
-          return
-        }
-
-        const isNext =
-          slideDirection === 'next'
-
-        currentSlide.style.transform =
-          isNext
-            ? 'translate3d(-100%, 0, 0)'
-            : 'translate3d(100%, 0, 0)'
-
-        incomingSlide.style.transform =
-          'translate3d(0, 0, 0)'
-      })
-
-    return () => {
-      window.cancelAnimationFrame(
-        frameId
-      )
-
-      incomingSlide.removeEventListener(
-        'transitionend',
-        handleTransitionEnd
-      )
-    }
-  }, [
-    finishTransition,
-    incomingMedia,
-    isTransitioning,
-    slideDirection,
-  ])
-  /*
-=========================
-Previous / next controls
-=========================
-   */
-  const previousMedia = useCallback(() => {
-    if (isTransitioning) {
-      return
-    }
-    const previousIndex =
-      activeMedia === 0
-        ? trainingMedia.length - 1
-        : activeMedia - 1
-
-    changeMedia(
-      previousIndex,
-      'previous'
-    )
-  }, [activeMedia, changeMedia, isTransitioning])
-
-  const nextMedia = useCallback(() => {
-    if (isTransitioning) {
-      return
-    }
-    const nextIndex =
-      activeMedia ===
-      trainingMedia.length - 1
-        ? 0
-        : activeMedia + 1
-
-    changeMedia(
-      nextIndex,
-      'next'
-    )
-  }, [activeMedia, changeMedia, isTransitioning])
-  /*
-=========================
-Indicator selection
-=========================
-   */
-  const selectMedia = (index) => {
-    if (
-      index === activeMedia ||
-      index < 0 ||
-      index >= trainingMedia.length ||
-      isTransitioning
-    ) {
-      return
-    }
-    const forwardDistance =
-      (index -
-        activeMedia +
-        trainingMedia.length) %
-      trainingMedia.length
-
-    const backwardDistance =
-      (activeMedia -
-        index +
-        trainingMedia.length) %
-      trainingMedia.length
-
-    const direction =
-      forwardDistance <=
-      backwardDistance
-        ? 'next'
-        : 'previous'
-
-    changeMedia(
-      index,
-      direction
-    )
-  }
-  /*
-=========================
-Video playback
-=========================
-   */
-  const handleVideoEnded = (
-    index
-  ) => {
-    if (
-      index === activeMedia &&
-      !isTransitioning
-    ) {
-      nextMedia()
-    }
-  }
-  useEffect(() => {
-    const currentMedia =
-      trainingMedia[activeMedia]
-    if (
-      !currentMedia ||
-      currentMedia.type !== 'video'
-    ) {
-      return undefined
-    }
-
-    const video =
-      videoRefs.current[activeMedia]
-
-    if (!video) {
-      return undefined
-    }
-
-    video.muted = true
-    video.defaultMuted = true
-    video.playsInline = true
-
-    const playVideo = async () => {
-      try {
-        await video.play()
-      } catch {
-        /*
-         * Muted autoplay can still be rejected
-         * by browser policies.
-         */
-        imageTimerRef.current =
-          window.setTimeout(() => {
-            nextMedia()
-          }, IMAGE_DURATION)
-      }
-    }
-
-    if (video.readyState >= 2) {
-      playVideo()
-    } else {
-      video.addEventListener(
-        'loadeddata',
-        playVideo,
-        {
-          once: true,
-        }
-      )
-    }
-
-    return () => {
-      video.removeEventListener(
-        'loadeddata',
-        playVideo
-      )
-    }
-  }, [activeMedia])
-  /*
-=========================
-Automatic image timing
-=========================
-
-Images remain visible for 3.5 seconds.
-Videos advance when playback finishes.
-   */
-  useEffect(() => {
-    clearImageTimer()
-    const currentMedia =
-      trainingMedia[activeMedia]
-
-    if (
-      !currentMedia ||
-      currentMedia.type === 'video'
-    ) {
-      return undefined
-    }
-
-    imageTimerRef.current =
-      window.setTimeout(() => {
-        nextMedia()
-      }, IMAGE_DURATION)
-
-    return () => {
-      clearImageTimer()
-    }
-  }, [activeMedia, nextMedia])
-  /*
-=========================
-Component cleanup
-=========================
-   */
-  useEffect(() => {
-    return () => {
-      clearTransitionTimer()
-      clearImageTimer()
-      clearTypewriterTimer()
-  pauseAllVideos()
-}
-  }, [])
-  /*
-=========================
-Media renderer
-=========================
-   */
-  const mediaStyle = {
-    width: '100%',
-    height: '100%',
-    display: 'block',
-    objectFit: 'cover',
-    objectPosition: 'center center',
-    userSelect: 'none',
-    WebkitUserSelect: 'none',
-    pointerEvents: 'none',
-    background: '#05070b',
-  }
-  const renderMedia = (
-    media,
-    index,
-    isIncoming = false
-  ) => {
-    if (!media) {
-      return null
-    }
-if (media.type === 'image') {
-  return (
-    <img
-      src={media.src}
-      alt={media.alt}
-      draggable="false"
-      style={mediaStyle}
-    />
-  )
-}
-
-return (
-  <video
-    ref={(element) =>
-      registerVideo(
-        index,
-        element
-      )
-    }
-    src={media.src}
-    autoPlay={!isIncoming}
-    muted
-    playsInline
-    preload="auto"
-    controls={false}
-    disablePictureInPicture
-    disableRemotePlayback
-    onEnded={() =>
-      handleVideoEnded(index)
-    }
-    aria-label={media.alt}
-    draggable="false"
-    style={mediaStyle}
-  />
-)
-  }
-  /*
-=========================
-Slideshow CSS classes
-=========================
-   */
-  const currentSlideClassName = [
-    'training-media-slide',
-    'training-media-current',
-  ].join(' ')
-  const incomingSlideClassName = [
-    'training-media-slide',
-    'training-media-incoming',
-  ].join(' ')
-  /*
-=========================
-Current / incoming media
-=========================
-   */
-  const currentMedia =
-    trainingMedia[activeMedia]
-  const incomingMediaItem =
-    incomingMedia !== null
-      ? trainingMedia[incomingMedia]
-      : null
-  const displayedMediaIndex =
-    incomingMedia !== null
-      ? incomingMedia
-      : activeMedia
   /*
 =========================
 Hero text rendering
@@ -2115,149 +1973,7 @@ Hero text rendering
         Training Showcase
         ========================= */}
 
-    <div className="training-showcase">
-      <div className="training-media">
-        {/* =========================
-            Current Media
-            ========================= */}
-
-        <div
-          ref={currentSlideRef}
-          className={currentSlideClassName}
-          style={{
-            transform:
-              'translate3d(0, 0, 0)',
-            transition: isTransitioning
-              ? `transform ${SLIDE_DURATION}ms cubic-bezier(0.22, 1, 0.36, 1)`
-              : 'none',
-          }}
-        >
-          {renderMedia(
-            currentMedia,
-            activeMedia
-          )}
-        </div>
-
-        {/* =========================
-            Incoming Media
-            ========================= */}
-
-        {incomingMediaItem && (
-          <div
-            ref={incomingSlideRef}
-            className={incomingSlideClassName}
-            style={{
-              transform:
-                slideDirection === 'next'
-                  ? 'translate3d(100%, 0, 0)'
-                  : 'translate3d(-100%, 0, 0)',
-              transition: isTransitioning
-                ? `transform ${SLIDE_DURATION}ms cubic-bezier(0.22, 1, 0.36, 1)`
-                : 'none',
-            }}
-          >
-            {renderMedia(
-              incomingMediaItem,
-              incomingMedia,
-              true
-            )}
-          </div>
-        )}
-
-        {/* =========================
-            Media Counter
-            ========================= */}
-
-        <div className="training-media-overlay">
-          <span>
-            {String(
-              displayedMediaIndex + 1
-            ).padStart(2, '0')}
-          </span>
-
-          <span>
-            {String(
-              trainingMedia.length
-            ).padStart(2, '0')}
-          </span>
-        </div>
-      </div>
-
-      {/* =========================
-          Training Controls
-          ========================= */}
-
-      <div className="training-controls">
-        <button
-          type="button"
-          className="training-control-button"
-          onClick={
-            previousMedia
-          }
-          disabled={
-            isTransitioning
-          }
-          aria-label="Previous training media"
-        >
-          ←
-        </button>
-
-        <div className="training-indicators">
-          {trainingMedia.map(
-            (
-              media,
-              index
-            ) => {
-              const isActive =
-                index ===
-                displayedMediaIndex
-
-              return (
-                <button
-                  key={`${media.src}-${index}`}
-                  type="button"
-                  className={`training-indicator ${
-                    isActive
-                      ? 'active'
-                      : ''
-                  }`}
-                  onClick={() =>
-                    selectMedia(
-                      index
-                    )
-                  }
-                  disabled={
-                    isTransitioning
-                  }
-                  aria-label={`View training media ${
-                    index + 1
-                  }`}
-                  aria-current={
-                    isActive
-                      ? 'true'
-                      : undefined
-                  }
-                />
-              )
-            }
-          )}
-        </div>
-
-        <button
-          type="button"
-          className="training-control-button"
-          onClick={
-            nextMedia
-          }
-          disabled={
-            isTransitioning
-          }
-          aria-label="Next training media"
-        >
-          →
-        </button>
-      </div>
-    </div>
+    <TrainingCarousel />
 
     {/* =========================
         Training Details
