@@ -1973,21 +1973,9 @@ button:focus:not(:focus-visible) {
     scroll-behavior: auto;
   }
 
-  *:not(.training-media-track) {
+  *:not(.training-media-track):not(.hero-cursor):not(.hero-cursor-complete) {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
-  }
-
-  /*
-   * Reduced-motion users still get a visible cursor,
-   * but it does not blink.
-   */
-
-  .hero-cursor,
-  .hero-cursor-complete {
-    animation: none !important;
-
-    opacity: 1;
   }
 }
