@@ -881,6 +881,7 @@ function TrainingCarousel() {
       if (activeSlideSessionRef.current.key !== sessionKey) {
         activeSlideSessionRef.current = {
           key: sessionKey,
+          positioned: false,
           playedMs: 0,
           resumedAt: null,
         }
@@ -913,15 +914,19 @@ function TrainingCarousel() {
         isLongVideo && Number.isFinite(activeMediaClipStart)
           ? activeMediaClipStart
           : 0
+      const clipEndSec = isLongVideo
+        ? Math.min(effectiveDurationSec, clipStartSec + SLIDE_CLIP_DURATION_SEC)
+        : null
 
-      if (
-        activeSlideSessionRef.current.playedMs === 0 &&
-        Math.abs(video.currentTime - clipStartSec) > 0.35
-      ) {
-        try {
-          video.currentTime = clipStartSec
-        } catch {
-          // onLoadedMetadata positions once metadata finishes loading
+      const sessionSnapshot = activeSlideSessionRef.current
+      if (!sessionSnapshot.positioned) {
+        sessionSnapshot.positioned = true
+        if (Math.abs(video.currentTime - clipStartSec) > 0.35) {
+          try {
+            video.currentTime = clipStartSec
+          } catch {
+            // onLoadedMetadata positions once metadata finishes loading
+          }
         }
       }
 
@@ -931,40 +936,114 @@ function TrainingCarousel() {
           ? Math.max(SLIDE_MIN_DWELL_MS, Math.ceil(effectiveDurationSec * 1000))
           : activeMediaMaxDuration || SLIDE_CLIP_DURATION_MS
 
-      const remainingMs = Math.max(
-        150,
-        totalTargetMs - activeSlideSessionRef.current.playedMs
-      )
-      const dwellFloorRemaining = Math.max(
-        0,
-        SLIDE_MIN_DWELL_MS - (Date.now() - slideSettledAtRef.current)
-      )
-      const delay = Math.max(dwellFloorRemaining, remainingMs)
+      let clipTimer = null
+      let safetyTimer = null
+      let cancelled = false
 
-      const sessionSnapshot = activeSlideSessionRef.current
+      const clearVideoTimers = () => {
+        if (clipTimer) {
+          clearTimeout(clipTimer)
+          clipTimer = null
+        }
+        if (safetyTimer) {
+          clearTimeout(safetyTimer)
+          safetyTimer = null
+        }
+      }
+
+      const advanceAfterClip = () => {
+        if (cancelled) return
+        sessionSnapshot.playedMs = totalTargetMs
+        sessionSnapshot.resumedAt = null
+        clearVideoTimers()
+        nextSlide()
+      }
+
+      const scheduleExactRemainingClip = () => {
+        if (cancelled || clipEndSec === null) return
+        const anchorStart = Math.max(clipStartSec, video.currentTime)
+        const rawRemainingMs = Math.round((clipEndSec - anchorStart) * 1000)
+        const dwellFloorRemaining = Math.max(
+          0,
+          SLIDE_MIN_DWELL_MS - (Date.now() - slideSettledAtRef.current)
+        )
+        const targetDelay = Math.max(
+          dwellFloorRemaining,
+          Math.min(SLIDE_CLIP_DURATION_MS, Math.max(50, rawRemainingMs))
+        )
+        if (clipTimer) clearTimeout(clipTimer)
+        clipTimer = setTimeout(advanceAfterClip, targetDelay)
+      }
+
+      const armSafetyFallback = (budgetMs) => {
+        if (safetyTimer) clearTimeout(safetyTimer)
+        safetyTimer = setTimeout(advanceAfterClip, budgetMs)
+      }
+
+      const onPlaying = () => {
+        if (isLongVideo) {
+          if (safetyTimer) {
+            clearTimeout(safetyTimer)
+            safetyTimer = null
+          }
+          scheduleExactRemainingClip()
+        }
+      }
+
+      const onWaiting = () => {
+        if (isLongVideo && clipTimer) {
+          clearTimeout(clipTimer)
+          clipTimer = null
+          const elapsed = Date.now() - slideSettledAtRef.current
+          armSafetyFallback(Math.max(1500, SLIDE_CLIP_DURATION_MS + 2500 - elapsed))
+        }
+      }
+
+      video.addEventListener('playing', onPlaying)
+      video.addEventListener('waiting', onWaiting)
+
+      const remainingFallbackMs = isLongVideo
+        ? Math.max(1500, totalTargetMs + 2500 - sessionSnapshot.playedMs)
+        : Math.max(
+            SLIDE_MIN_DWELL_MS - (Date.now() - slideSettledAtRef.current),
+            Math.max(150, totalTargetMs - sessionSnapshot.playedMs)
+          )
+      armSafetyFallback(remainingFallbackMs)
+
       sessionSnapshot.resumedAt = Date.now()
 
       const playPromise = video.play()
-      if (playPromise && typeof playPromise.catch === 'function') {
-        playPromise.catch(() => {
-          // Keep clip timer active so slide still advances after dwell duration
-        })
+      if (playPromise && typeof playPromise.then === 'function') {
+        playPromise
+          .then(() => {
+            if (!cancelled && isLongVideo && !video.paused && !video.seeking && video.readyState >= 3) {
+              if (safetyTimer) {
+                clearTimeout(safetyTimer)
+                safetyTimer = null
+              }
+              scheduleExactRemainingClip()
+            }
+          })
+          .catch(() => {
+            if (!cancelled) {
+              armSafetyFallback(
+                Math.max(
+                  SLIDE_MIN_DWELL_MS - (Date.now() - slideSettledAtRef.current),
+                  Math.max(150, totalTargetMs - sessionSnapshot.playedMs)
+                )
+              )
+            }
+          })
       }
 
-      autoPlayTimerRef.current = setTimeout(() => {
-        sessionSnapshot.playedMs = totalTargetMs
-        sessionSnapshot.resumedAt = null
-        nextSlide()
-      }, delay)
-
       return () => {
+        cancelled = true
+        video.removeEventListener('playing', onPlaying)
+        video.removeEventListener('waiting', onWaiting)
+        clearVideoTimers()
         if (sessionSnapshot.resumedAt !== null) {
           sessionSnapshot.playedMs += Date.now() - sessionSnapshot.resumedAt
           sessionSnapshot.resumedAt = null
-        }
-        if (autoPlayTimerRef.current) {
-          clearTimeout(autoPlayTimerRef.current)
-          autoPlayTimerRef.current = null
         }
       }
     }
