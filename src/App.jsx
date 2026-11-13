@@ -18,14 +18,14 @@ const trainingMedia = [
     id: 'training-vid-3',
     type: 'video',
     src: '/assets/Cloud Computing Training 3.mp4',
-    maxDurationMs: 12000,
+    maxDurationMs: 4000,
     alt: 'AWS Cloud Computing Training session at Management Edge LTD',
   },
   {
     id: 'training-vid-4',
     type: 'video',
     src: '/assets/Cloud Computing Training 4.mp4',
-    maxDurationMs: 45000,
+    maxDurationMs: 4000,
     alt: 'AWS Cloud Computing Training session at Management Edge LTD',
   },
   {
@@ -49,6 +49,8 @@ const trainingMedia = [
 ]
 
 const SLIDE_IMAGE_DURATION_MS = 4000
+const SLIDE_CLIP_DURATION_MS = 4000
+const SLIDE_CLIP_DURATION_SEC = SLIDE_CLIP_DURATION_MS / 1000
 const SLIDE_MIN_DWELL_MS = 3000
 const SLIDE_TRANSITION_SAFETY_MS = 680
 const DRAG_THRESHOLD_PX = 50
@@ -145,13 +147,48 @@ async function fetchCompleteVideoBlobUrl(item, signal) {
   return null
 }
 
-async function extractVideoPosterUrl(blobUrl, signal) {
-  if (signal?.aborted) return null
+function chooseRandomClipStart(durationSec, previousStartSec = null) {
+  if (!Number.isFinite(durationSec) || durationSec <= SLIDE_CLIP_DURATION_SEC) {
+    return 0
+  }
+  const tailMargin = durationSec > SLIDE_CLIP_DURATION_SEC + 0.25 ? 0.15 : 0
+  const maxStart = Math.max(0, durationSec - SLIDE_CLIP_DURATION_SEC - tailMargin)
+  if (maxStart <= 0.1) {
+    return 0
+  }
+
+  let chosen
+  if (!Number.isFinite(previousStartSec)) {
+    chosen = Math.random() * maxStart
+  } else {
+    const minSeparation = Math.min(SLIDE_CLIP_DURATION_SEC, maxStart * 0.35)
+    const leftEnd = Math.max(0, previousStartSec - minSeparation)
+    const rightStart = Math.min(maxStart, previousStartSec + minSeparation)
+    const rightSpan = Math.max(0, maxStart - rightStart)
+    const totalSpan = leftEnd + rightSpan
+
+    if (totalSpan <= 0.05) {
+      chosen = (previousStartSec + maxStart * 0.5) % maxStart
+    } else {
+      const pick = Math.random() * totalSpan
+      chosen = pick < leftEnd ? pick : rightStart + (pick - leftEnd)
+    }
+  }
+
+  return Math.round(chosen * 1000) / 1000
+}
+
+async function extractVideoFrameFromBlob(blobUrl, signal, resolveClipPlan) {
+  if (signal?.aborted) return { duration: null, clipStart: 0, poster: null }
   return new Promise((resolve) => {
     const tempVideo = document.createElement('video')
     let settled = false
+    let resolvedDuration = null
+    let resolvedClipStart = 0
+    let targetSeekTime = 0.05
 
     const cleanup = () => {
+      tempVideo.onloadedmetadata = null
       tempVideo.onloadeddata = null
       tempVideo.onseeked = null
       tempVideo.onerror = null
@@ -160,19 +197,23 @@ async function extractVideoPosterUrl(blobUrl, signal) {
       tempVideo.load()
     }
 
-    const finish = (result) => {
+    const finish = (poster) => {
       if (settled) return
       settled = true
       clearTimeout(timeoutId)
       signal?.removeEventListener('abort', onAbort)
       cleanup()
-      resolve(result)
+      resolve({
+        duration: resolvedDuration,
+        clipStart: resolvedClipStart,
+        poster,
+      })
     }
 
     const onAbort = () => finish(null)
     signal?.addEventListener('abort', onAbort, { once: true })
 
-    const timeoutId = setTimeout(() => finish(null), 1500)
+    const timeoutId = setTimeout(() => finish(null), 2000)
 
     const captureFrame = () => {
       if (settled) return
@@ -205,19 +246,55 @@ async function extractVideoPosterUrl(blobUrl, signal) {
     tempVideo.playsInline = true
     tempVideo.preload = 'auto'
 
-    tempVideo.onloadeddata = () => {
-      if (tempVideo.readyState >= 2) {
-        if (tempVideo.duration && tempVideo.duration > 0.1) {
-          tempVideo.onseeked = captureFrame
-          try {
-            tempVideo.currentTime = 0.05
-          } catch {
-            captureFrame()
-          }
-        } else {
+    const seekAndCapture = () => {
+      if (settled) return
+      if (Math.abs(tempVideo.currentTime - targetSeekTime) < 0.03) {
+        if (tempVideo.readyState >= 2) {
           captureFrame()
+        } else {
+          tempVideo.onloadeddata = () => {
+            if (tempVideo.readyState >= 2) captureFrame()
+          }
+        }
+        return
+      }
+      tempVideo.onseeked = () => {
+        if (tempVideo.readyState >= 2) {
+          captureFrame()
+        } else {
+          tempVideo.onloadeddata = () => {
+            if (tempVideo.readyState >= 2) captureFrame()
+          }
         }
       }
+      try {
+        tempVideo.currentTime = targetSeekTime
+      } catch {
+        captureFrame()
+      }
+    }
+
+    tempVideo.onloadedmetadata = () => {
+      if (settled) return
+      resolvedDuration =
+        Number.isFinite(tempVideo.duration) && tempVideo.duration > 0
+          ? tempVideo.duration
+          : null
+      const plan =
+        typeof resolveClipPlan === 'function'
+          ? resolveClipPlan(resolvedDuration)
+          : { clipStart: 0, seekTime: 0.05 }
+      resolvedClipStart = Number.isFinite(plan?.clipStart) ? plan.clipStart : 0
+      const rawSeek = Number.isFinite(plan?.seekTime)
+        ? plan.seekTime
+        : resolvedClipStart > 0.02
+          ? resolvedClipStart
+          : 0.05
+      targetSeekTime =
+        resolvedDuration !== null
+          ? Math.max(0, Math.min(rawSeek, Math.max(0, resolvedDuration - 0.05)))
+          : rawSeek
+      seekAndCapture()
     }
 
     tempVideo.onerror = () => finish(null)
@@ -265,7 +342,10 @@ function TrainingCarousel() {
   const isDraggingRef = useRef(false)
   const isTouchInteractionRef = useRef(false)
   const failedImageIdsRef = useRef(new Set())
+  const lastClipStartByIdRef = useRef({})
+  const mountControllerRef = useRef(null)
   const slideSettledAtRef = useRef(0)
+  const activeSlideSessionRef = useRef({ key: null, playedMs: 0, resumedAt: null })
   const queueRef = useRef(queue)
   const activeIndexRef = useRef(activeIndex)
   const stageRef = useRef(stage)
@@ -308,6 +388,7 @@ function TrainingCarousel() {
   // Background image preloading + complete Blob download for videos
   useEffect(() => {
     const controller = new AbortController()
+    mountControllerRef.current = controller
     const createdUrls = {}
     const preloadedImages = []
 
@@ -338,17 +419,38 @@ function TrainingCarousel() {
             return
           }
           createdUrls[videoItem.id] = blobUrl
-          const realPoster = await extractVideoPosterUrl(blobUrl, controller.signal)
+          const { duration, clipStart, poster } = await extractVideoFrameFromBlob(
+            blobUrl,
+            controller.signal,
+            (videoDuration) => {
+              const chosenStart = chooseRandomClipStart(
+                videoDuration,
+                lastClipStartByIdRef.current[videoItem.id]
+              )
+              lastClipStartByIdRef.current[videoItem.id] = chosenStart
+              return {
+                clipStart: chosenStart,
+                seekTime:
+                  chosenStart > 0.02
+                    ? chosenStart
+                    : Math.min(0.05, Math.max(0, (videoDuration || 1) - 0.1)),
+              }
+            }
+          )
           if (controller.signal.aborted) {
             return
+          }
+          const clipMeta = {
+            src: blobUrl,
+            duration,
+            clipStart,
+            poster: poster || undefined,
           }
           setQueue((prev) => {
             const existingIdx = prev.findIndex((item) => item.id === videoItem.id)
             if (existingIdx !== -1) {
               return prev.map((item, idx) =>
-                idx === existingIdx
-                  ? { ...item, src: blobUrl, poster: realPoster || undefined }
-                  : item
+                idx === existingIdx ? { ...item, ...clipMeta } : item
               )
             }
 
@@ -367,8 +469,7 @@ function TrainingCarousel() {
             const nextQueue = [...prev]
             nextQueue.splice(insertAt, 0, {
               ...videoItem,
-              src: blobUrl,
-              poster: realPoster || undefined,
+              ...clipMeta,
             })
             queueRef.current = nextQueue
             return nextQueue
@@ -383,6 +484,10 @@ function TrainingCarousel() {
 
     return () => {
       controller.abort()
+      if (mountControllerRef.current === controller) {
+        mountControllerRef.current = null
+      }
+      lastClipStartByIdRef.current = {}
       preloadedImages.forEach((img) => {
         img.onload = null
         img.onerror = null
@@ -417,19 +522,59 @@ function TrainingCarousel() {
 
       pauseVideos(finished.targetItem.id)
 
-      let resolvedIndex
-      if (finished.reshuffledQueue) {
-        const currentLatest = queueRef.current
-        const baseIds = new Set(finished.reshuffledQueue.map((item) => item.id))
-        const extrasArrivedMidWrap = currentLatest.filter(
-          (item) => !baseIds.has(item.id)
-        )
-        const nextQueue = [...finished.reshuffledQueue]
-        extrasArrivedMidWrap.forEach((videoItem) => {
-          const insertAt =
-            1 + Math.floor(Math.random() * Math.max(1, nextQueue.length))
-          nextQueue.splice(Math.min(insertAt, nextQueue.length), 0, videoItem)
+      const rotatedClips = []
+      const rotatedById = {}
+      if (finished.direction !== 'cancel') {
+        activeSlideSessionRef.current = {
+          key: null,
+          playedMs: 0,
+          resumedAt: null,
+        }
+        finished.items.forEach((slideItem) => {
+          if (
+            slideItem.id !== finished.targetItem.id &&
+            slideItem.type === 'video' &&
+            typeof slideItem.src === 'string' &&
+            slideItem.src.startsWith('blob:')
+          ) {
+            const nextStart = chooseRandomClipStart(
+              slideItem.duration,
+              lastClipStartByIdRef.current[slideItem.id]
+            )
+            lastClipStartByIdRef.current[slideItem.id] = nextStart
+            rotatedById[slideItem.id] = nextStart
+            rotatedClips.push({ exited: slideItem, nextStart })
+          }
         })
+      }
+
+      let resolvedIndex
+      if (finished.reshuffledQueue || rotatedClips.length > 0) {
+        let nextQueue
+        if (finished.reshuffledQueue) {
+          const currentLatest = queueRef.current
+          const baseIds = new Set(finished.reshuffledQueue.map((item) => item.id))
+          const extrasArrivedMidWrap = currentLatest.filter(
+            (item) => !baseIds.has(item.id)
+          )
+          nextQueue = [...finished.reshuffledQueue]
+          extrasArrivedMidWrap.forEach((videoItem) => {
+            const insertAt =
+              1 + Math.floor(Math.random() * Math.max(1, nextQueue.length))
+            nextQueue.splice(Math.min(insertAt, nextQueue.length), 0, videoItem)
+          })
+        } else {
+          nextQueue = [...queueRef.current]
+        }
+
+        if (rotatedClips.length > 0) {
+          nextQueue = nextQueue.map((item) =>
+            Object.prototype.hasOwnProperty.call(rotatedById, item.id)
+              ? { ...item, clipStart: rotatedById[item.id], poster: undefined }
+              : item
+          )
+        }
+
         queueRef.current = nextQueue
         setQueue(nextQueue)
         resolvedIndex = Math.max(
@@ -442,6 +587,27 @@ function TrainingCarousel() {
         )
         resolvedIndex = idx !== -1 ? idx : 0
       }
+
+      const activeSignal = mountControllerRef.current?.signal
+      rotatedClips.forEach(({ exited, nextStart }) => {
+        const seekTime =
+          nextStart > 0.02
+            ? nextStart
+            : Math.min(0.05, Math.max(0, (exited.duration || 1) - 0.1))
+        extractVideoFrameFromBlob(exited.src, activeSignal, () => ({
+          clipStart: nextStart,
+          seekTime,
+        })).then(({ poster }) => {
+          if (activeSignal?.aborted || !poster) return
+          setQueue((prev) =>
+            prev.map((item) =>
+              item.id === exited.id && item.clipStart === nextStart
+                ? { ...item, poster }
+                : item
+            )
+          )
+        })
+      })
 
       activeIndexRef.current = resolvedIndex
       setActiveIndex(resolvedIndex)
@@ -672,6 +838,8 @@ function TrainingCarousel() {
   const activeMediaId = activeSlideMedia?.id
   const activeMediaType = activeSlideMedia?.type
   const activeMediaSrc = activeSlideMedia?.src
+  const activeMediaDuration = activeSlideMedia?.duration
+  const activeMediaClipStart = activeSlideMedia?.clipStart ?? 0
   const activeMediaMaxDuration = activeSlideMedia?.maxDurationMs
   const isStageActive = Boolean(stage)
 
@@ -705,44 +873,108 @@ function TrainingCarousel() {
       if (!video) {
         autoPlayTimerRef.current = setTimeout(() => {
           nextSlide()
-        }, SLIDE_IMAGE_DURATION_MS)
+        }, SLIDE_CLIP_DURATION_MS)
         return () => clearTimers()
+      }
+
+      const sessionKey = `${activeMediaId}:${activeIndex}:${activeMediaClipStart}`
+      if (activeSlideSessionRef.current.key !== sessionKey) {
+        activeSlideSessionRef.current = {
+          key: sessionKey,
+          playedMs: 0,
+          resumedAt: null,
+        }
+      }
+
+      if (isHovered || isFocused) {
+        if (activeSlideSessionRef.current.resumedAt !== null) {
+          activeSlideSessionRef.current.playedMs +=
+            Date.now() - activeSlideSessionRef.current.resumedAt
+          activeSlideSessionRef.current.resumedAt = null
+        }
+        video.pause()
+        return
       }
 
       video.muted = true
       video.defaultMuted = true
       video.playsInline = true
-      try {
-        video.currentTime = 0
-      } catch {
-        // ignore
+
+      const effectiveDurationSec =
+        Number.isFinite(activeMediaDuration) && activeMediaDuration > 0
+          ? activeMediaDuration
+          : Number.isFinite(video.duration) && video.duration > 0
+            ? video.duration
+            : null
+      const isLongVideo =
+        effectiveDurationSec !== null &&
+        effectiveDurationSec > SLIDE_CLIP_DURATION_SEC
+      const clipStartSec =
+        isLongVideo && Number.isFinite(activeMediaClipStart)
+          ? activeMediaClipStart
+          : 0
+
+      if (
+        activeSlideSessionRef.current.playedMs === 0 &&
+        Math.abs(video.currentTime - clipStartSec) > 0.35
+      ) {
+        try {
+          video.currentTime = clipStartSec
+        } catch {
+          // onLoadedMetadata positions once metadata finishes loading
+        }
       }
+
+      const totalTargetMs = isLongVideo
+        ? SLIDE_CLIP_DURATION_MS
+        : effectiveDurationSec
+          ? Math.max(SLIDE_MIN_DWELL_MS, Math.ceil(effectiveDurationSec * 1000))
+          : activeMediaMaxDuration || SLIDE_CLIP_DURATION_MS
+
+      const remainingMs = Math.max(
+        150,
+        totalTargetMs - activeSlideSessionRef.current.playedMs
+      )
+      const dwellFloorRemaining = Math.max(
+        0,
+        SLIDE_MIN_DWELL_MS - (Date.now() - slideSettledAtRef.current)
+      )
+      const delay = Math.max(dwellFloorRemaining, remainingMs)
+
+      const sessionSnapshot = activeSlideSessionRef.current
+      sessionSnapshot.resumedAt = Date.now()
 
       const playPromise = video.play()
       if (playPromise && typeof playPromise.catch === 'function') {
         playPromise.catch(() => {
-          autoPlayTimerRef.current = setTimeout(() => {
-            nextSlide()
-          }, SLIDE_IMAGE_DURATION_MS)
+          // Keep clip timer active so slide still advances after dwell duration
         })
       }
 
-      const maxVideoDuration =
-        Number.isFinite(video.duration) && video.duration > 0
-          ? Math.max(SLIDE_MIN_DWELL_MS, Math.ceil(video.duration * 1000) + 1200)
-          : activeMediaMaxDuration || 45000
-      const safetyVideoTimer = setTimeout(() => {
+      autoPlayTimerRef.current = setTimeout(() => {
+        sessionSnapshot.playedMs = totalTargetMs
+        sessionSnapshot.resumedAt = null
         nextSlide()
-      }, maxVideoDuration)
+      }, delay)
 
       return () => {
-        clearTimeout(safetyVideoTimer)
+        if (sessionSnapshot.resumedAt !== null) {
+          sessionSnapshot.playedMs += Date.now() - sessionSnapshot.resumedAt
+          sessionSnapshot.resumedAt = null
+        }
+        if (autoPlayTimerRef.current) {
+          clearTimeout(autoPlayTimerRef.current)
+          autoPlayTimerRef.current = null
+        }
       }
     }
   }, [
+    activeIndex,
     activeMediaId,
     activeMediaType,
     activeMediaSrc,
+    activeMediaDuration,
+    activeMediaClipStart,
     activeMediaMaxDuration,
     isStageActive,
     isDragging,
@@ -953,8 +1185,63 @@ function TrainingCarousel() {
                       controls={false}
                       disablePictureInPicture
                       disableRemotePlayback
+                      onLoadedMetadata={(e) => {
+                        const video = e.currentTarget
+                        if (
+                          Number.isFinite(item.clipStart) &&
+                          Math.abs(video.currentTime - item.clipStart) > 0.35
+                        ) {
+                          try {
+                            video.currentTime = item.clipStart
+                          } catch {
+                            // ignore
+                          }
+                        }
+                      }}
+                      onTimeUpdate={(e) => {
+                        if (
+                          !isActiveSlide ||
+                          isHovered ||
+                          isFocused ||
+                          stageRef.current
+                        ) {
+                          return
+                        }
+                        const video = e.currentTarget
+                        const vidDuration =
+                          Number.isFinite(item.duration) && item.duration > 0
+                            ? item.duration
+                            : Number.isFinite(video.duration) && video.duration > 0
+                              ? video.duration
+                              : null
+                        if (!vidDuration || vidDuration <= SLIDE_CLIP_DURATION_SEC) {
+                          return
+                        }
+                        const clipEnd = Math.min(
+                          vidDuration,
+                          (item.clipStart || 0) + SLIDE_CLIP_DURATION_SEC
+                        )
+                        if (video.currentTime >= clipEnd) {
+                          video.pause()
+                          if (
+                            Date.now() - slideSettledAtRef.current >=
+                            SLIDE_MIN_DWELL_MS
+                          ) {
+                            nextSlide()
+                          }
+                        }
+                      }}
                       onEnded={() => {
-                        if (isActiveSlide) nextSlide()
+                        if (!isActiveSlide) return
+                        const elapsed = Date.now() - slideSettledAtRef.current
+                        if (elapsed >= SLIDE_MIN_DWELL_MS) {
+                          nextSlide()
+                        } else {
+                          clearTimers()
+                          autoPlayTimerRef.current = setTimeout(() => {
+                            nextSlide()
+                          }, Math.max(0, SLIDE_MIN_DWELL_MS - elapsed))
+                        }
                       }}
                       onError={() => {
                         if (isActiveSlide) {
