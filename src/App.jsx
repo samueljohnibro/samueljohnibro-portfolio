@@ -18,7 +18,6 @@ const trainingMedia = [
     id: 'training-vid-3',
     type: 'video',
     src: '/assets/Cloud Computing Training 3.mp4',
-    poster: '/assets/Cloud Computing Training 2.png',
     maxDurationMs: 12000,
     alt: 'AWS Cloud Computing Training session at Management Edge LTD',
   },
@@ -26,7 +25,6 @@ const trainingMedia = [
     id: 'training-vid-4',
     type: 'video',
     src: '/assets/Cloud Computing Training 4.mp4',
-    poster: '/assets/Cloud Computing Training 5.png',
     maxDurationMs: 45000,
     alt: 'AWS Cloud Computing Training session at Management Edge LTD',
   },
@@ -50,7 +48,8 @@ const trainingMedia = [
   },
 ]
 
-const SLIDE_IMAGE_DURATION_MS = 3500
+const SLIDE_IMAGE_DURATION_MS = 4000
+const SLIDE_MIN_DWELL_MS = 3000
 const SLIDE_TRANSITION_SAFETY_MS = 680
 const DRAG_THRESHOLD_PX = 50
 
@@ -146,6 +145,86 @@ async function fetchCompleteVideoBlobUrl(item, signal) {
   return null
 }
 
+async function extractVideoPosterUrl(blobUrl, signal) {
+  if (signal?.aborted) return null
+  return new Promise((resolve) => {
+    const tempVideo = document.createElement('video')
+    let settled = false
+
+    const cleanup = () => {
+      tempVideo.onloadeddata = null
+      tempVideo.onseeked = null
+      tempVideo.onerror = null
+      tempVideo.pause()
+      tempVideo.removeAttribute('src')
+      tempVideo.load()
+    }
+
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeoutId)
+      signal?.removeEventListener('abort', onAbort)
+      cleanup()
+      resolve(result)
+    }
+
+    const onAbort = () => finish(null)
+    signal?.addEventListener('abort', onAbort, { once: true })
+
+    const timeoutId = setTimeout(() => finish(null), 1500)
+
+    const captureFrame = () => {
+      if (settled) return
+      try {
+        const vw = tempVideo.videoWidth
+        const vh = tempVideo.videoHeight
+        if (!vw || !vh) {
+          finish(null)
+          return
+        }
+        const maxWidth = 960
+        const scale = vw > maxWidth ? maxWidth / vw : 1
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.round(vw * scale)
+        canvas.height = Math.round(vh * scale)
+        const ctx = canvas.getContext('2d')
+        if (!ctx) {
+          finish(null)
+          return
+        }
+        ctx.drawImage(tempVideo, 0, 0, canvas.width, canvas.height)
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85)
+        finish(dataUrl && dataUrl.length > 200 ? dataUrl : null)
+      } catch {
+        finish(null)
+      }
+    }
+
+    tempVideo.muted = true
+    tempVideo.playsInline = true
+    tempVideo.preload = 'auto'
+
+    tempVideo.onloadeddata = () => {
+      if (tempVideo.readyState >= 2) {
+        if (tempVideo.duration && tempVideo.duration > 0.1) {
+          tempVideo.onseeked = captureFrame
+          try {
+            tempVideo.currentTime = 0.05
+          } catch {
+            captureFrame()
+          }
+        } else {
+          captureFrame()
+        }
+      }
+    }
+
+    tempVideo.onerror = () => finish(null)
+    tempVideo.src = blobUrl
+  })
+}
+
 /*
 =========================
 Hero typewriter configuration
@@ -186,9 +265,14 @@ function TrainingCarousel() {
   const isDraggingRef = useRef(false)
   const isTouchInteractionRef = useRef(false)
   const failedImageIdsRef = useRef(new Set())
+  const slideSettledAtRef = useRef(0)
   const queueRef = useRef(queue)
   const activeIndexRef = useRef(activeIndex)
   const stageRef = useRef(stage)
+
+  useEffect(() => {
+    slideSettledAtRef.current = Date.now()
+  }, [])
 
   useLayoutEffect(() => {
     queueRef.current = queue
@@ -227,12 +311,9 @@ function TrainingCarousel() {
     const createdUrls = {}
     const preloadedImages = []
 
-    const imageWarmList = trainingMedia.flatMap((item) => {
-      if (item.type === 'image') {
-        return [{ id: item.id, src: item.src }]
-      }
-      return item.poster ? [{ id: null, src: item.poster }] : []
-    })
+    const imageWarmList = trainingMedia
+      .filter((item) => item.type === 'image')
+      .map((item) => ({ id: item.id, src: item.src }))
 
     imageWarmList.forEach(({ id, src }) => {
       const img = new Image()
@@ -251,17 +332,23 @@ function TrainingCarousel() {
     const videoItems = trainingMedia.filter((item) => item.type === 'video')
     videoItems.forEach((videoItem) => {
       fetchCompleteVideoBlobUrl(videoItem, controller.signal)
-        .then((blobUrl) => {
+        .then(async (blobUrl) => {
           if (!blobUrl || controller.signal.aborted) {
             if (blobUrl) URL.revokeObjectURL(blobUrl)
             return
           }
           createdUrls[videoItem.id] = blobUrl
+          const realPoster = await extractVideoPosterUrl(blobUrl, controller.signal)
+          if (controller.signal.aborted) {
+            return
+          }
           setQueue((prev) => {
             const existingIdx = prev.findIndex((item) => item.id === videoItem.id)
             if (existingIdx !== -1) {
               return prev.map((item, idx) =>
-                idx === existingIdx ? { ...item, src: blobUrl } : item
+                idx === existingIdx
+                  ? { ...item, src: blobUrl, poster: realPoster || undefined }
+                  : item
               )
             }
 
@@ -281,6 +368,7 @@ function TrainingCarousel() {
             nextQueue.splice(insertAt, 0, {
               ...videoItem,
               src: blobUrl,
+              poster: realPoster || undefined,
             })
             queueRef.current = nextQueue
             return nextQueue
@@ -357,6 +445,7 @@ function TrainingCarousel() {
 
       activeIndexRef.current = resolvedIndex
       setActiveIndex(resolvedIndex)
+      slideSettledAtRef.current = Date.now()
       stageRef.current = null
       setStage(null)
     },
@@ -579,22 +668,26 @@ function TrainingCarousel() {
     [launchStage]
   )
 
+  const activeSlideMedia = queue[activeIndex] || queue[0]
+  const activeMediaId = activeSlideMedia?.id
+  const activeMediaType = activeSlideMedia?.type
+  const activeMediaSrc = activeSlideMedia?.src
+  const activeMediaMaxDuration = activeSlideMedia?.maxDurationMs
+  const isStageActive = Boolean(stage)
+
   // Autoplay progression for current active slide
   useEffect(() => {
-    if (stage || isDragging) return
-
-    const currentMedia = queue[activeIndex]
-    if (!currentMedia) return
+    if (isStageActive || isDragging || !activeMediaId) return
 
     clearTimers()
 
-    if (currentMedia.type === 'image') {
+    if (activeMediaType === 'image') {
       if (isHovered || isFocused) {
         return
       }
-      const delay = failedImageIdsRef.current.has(currentMedia.id)
-        ? 450
-        : SLIDE_IMAGE_DURATION_MS
+      const elapsed = Date.now() - slideSettledAtRef.current
+      const remaining = SLIDE_IMAGE_DURATION_MS - elapsed
+      const delay = Math.max(SLIDE_MIN_DWELL_MS, remaining)
       autoPlayTimerRef.current = setTimeout(() => {
         nextSlide()
       }, delay)
@@ -607,8 +700,8 @@ function TrainingCarousel() {
       }
     }
 
-    if (currentMedia.type === 'video') {
-      const video = videoRefs.current[currentMedia.id]
+    if (activeMediaType === 'video') {
+      const video = videoRefs.current[activeMediaId]
       if (!video) {
         autoPlayTimerRef.current = setTimeout(() => {
           nextSlide()
@@ -636,8 +729,8 @@ function TrainingCarousel() {
 
       const maxVideoDuration =
         Number.isFinite(video.duration) && video.duration > 0
-          ? Math.ceil(video.duration * 1000) + 1200
-          : currentMedia.maxDurationMs || 45000
+          ? Math.max(SLIDE_MIN_DWELL_MS, Math.ceil(video.duration * 1000) + 1200)
+          : activeMediaMaxDuration || 45000
       const safetyVideoTimer = setTimeout(() => {
         nextSlide()
       }, maxVideoDuration)
@@ -647,9 +740,11 @@ function TrainingCarousel() {
       }
     }
   }, [
-    queue,
-    activeIndex,
-    stage,
+    activeMediaId,
+    activeMediaType,
+    activeMediaSrc,
+    activeMediaMaxDuration,
+    isStageActive,
     isDragging,
     isHovered,
     isFocused,
@@ -838,12 +933,6 @@ function TrainingCarousel() {
                     loading="eager"
                     onError={() => {
                       failedImageIdsRef.current.add(item.id)
-                      if (isActiveSlide && queueRef.current.length > 1) {
-                        clearTimers()
-                        autoPlayTimerRef.current = setTimeout(() => {
-                          nextSlide()
-                        }, 400)
-                      }
                     }}
                   />
                 ) : (
@@ -868,7 +957,12 @@ function TrainingCarousel() {
                         if (isActiveSlide) nextSlide()
                       }}
                       onError={() => {
-                        if (isActiveSlide) nextSlide()
+                        if (isActiveSlide) {
+                          clearTimers()
+                          autoPlayTimerRef.current = setTimeout(() => {
+                            nextSlide()
+                          }, SLIDE_MIN_DWELL_MS)
+                        }
                       }}
                       className="training-video-element"
                       aria-label={item.alt}
